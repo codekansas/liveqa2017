@@ -1,6 +1,7 @@
 # Project Proposal
 
 ## Introduction
+
  - Factoid question answering research has been focused on for many years, but the no-factoid research is still on the go.
    Our team will focus on the no-factoid questions to retrieve the best answer from the existing resources. The goal of doing
    this project is that to participate the TREC LiveQA 2017 competition.
