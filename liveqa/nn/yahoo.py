@@ -19,8 +19,8 @@ import numpy as np
 
 # Constants.
 QUESTION_TITLE_MAXLEN = 140
-QUESTION_BODY_MAXLEN = 4000
-ANSWER_MAXLEN = 4000
+QUESTION_BODY_MAXLEN = 500
+ANSWER_MAXLEN = 500
 DATA_ENV_NAME = 'YAHOO_DATA'  # Directory containing the Yahoo data, unzipped.
 YAHOO_L6_URL = 'http://webscope.sandbox.yahoo.com/catalog.php?datatype=l'
 
@@ -44,7 +44,7 @@ if not os.path.exists(DATA_PATH):
 TEXT = ('abcdefghijklmnopqrstuvwxyz'
         'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         '1234567890'
-        '!@#$%^&*()\\|\'"-_=+')
+        '?.!@#$%^&*()/\\|\'"-_=+ ')
 TOKENS = dict((c, i + 2) for i, c in enumerate(TEXT))
 NUM_TOKENS = len(TOKENS) + 2
 
@@ -61,8 +61,11 @@ def tokenize(text, pad_len=None):
     return idxs
 
 
-def detokenize(tokens):
+def detokenize(tokens, argmax=False):
     """Converts tokens to text."""
+
+    if argmax:
+        tokens = np.argmax(tokens, axis=-1)
 
     return ''.join(['' if t < 2 else TEXT[t-2] for t in tokens])
 
@@ -125,15 +128,36 @@ def iterate_qa_data(batch_size):
     iterable = itertools.cycle(iterate_qa_pairs())
 
     qtitles, qbodies, abodies = [], [], []
-    counter = 0
 
-    for qtitle, qbody, abody in iterable:
+    for i, (qtitle, qbody, abody) in enumerate(iterable, 1):
         qtitles.append(qtitle)
         qbodies.append(qbody)
         abodies.append(abody)
 
-        counter += 1
-        if counter == batch_size:
-            counter = 0
+        if i % batch_size == 0:
             yield np.asarray(qtitles), np.asarray(qbodies), np.asarray(abodies)
             qtitles, qbodies, abodies = [], [], []
+
+
+def iterate_answer_to_question(batch_size):
+    """Iterator for producing answer -> question data.
+
+    Args:
+        batch_size: int, the number of samples per batch.
+
+    Yields:
+        bestanswer: numpy array with shape (batch_size, ANSWER_MAXLEN)
+        subject: numpy array with shape (batch_size, QUESTION_TITLE_MAXLEN)
+    """
+
+    iterable = itertools.cycle(iterate_qa_pairs())
+
+    qtitles, abodies = [], []
+
+    for i, (qtitle, _, abody) in enumerate(iterable, 1):
+        qtitles.append(qtitle)
+        abodies.append(abody)
+
+        if i % batch_size == 0:
+            yield np.asarray(abodies), np.expand_dims(np.asarray(qtitles), -1)
+            qtitles, abodies = [], []

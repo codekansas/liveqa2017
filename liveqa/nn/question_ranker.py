@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 """
 Defines the network model to use.
 
