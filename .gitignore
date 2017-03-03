@@ -1,9 +1,10 @@
 # Credentials files.
 credentials.*
 
-# Databases.
+# Large files.
 *.db
 data/
+*.h5
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
