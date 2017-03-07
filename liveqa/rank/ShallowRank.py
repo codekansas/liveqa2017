@@ -18,7 +18,9 @@ class ShallowRank(object):
         index = similarities.MatrixSimilarity(lsi[corpus])
         sims = index[vec_lsi]
         sims = sorted(enumerate(sims), key=lambda item: -item[1])
-        print sims
-
-sr = ShallowRank(1,"test mode",["test1 is test","education natural language processing"])
-sr.shallowRank()
+        if self.nc <= len(sims):
+            selected = [sim[0] for sim in sims[0:self.nc]]
+        else:
+            selected = [sim[0] for sim in sims]
+        results = [self.candidates[n] for n in selected]
+        return results
