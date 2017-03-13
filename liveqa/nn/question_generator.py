@@ -113,7 +113,7 @@ class QuestionGenerator(object):
 
         return weight
 
-    def build(self, sess, num_emb=100, num_rnn=2):
+    def build(self, sess, num_emb=100, num_rnn=2, rnn_size=512, conv_size=512):
         """Builds the model, initializing weights.
 
         TODO: Docstring.
@@ -154,15 +154,13 @@ class QuestionGenerator(object):
             return activation(tf.matmul(x, w) + b)
 
         with tf.variable_scope('encoder'):
-            x = _add_conv(x, 1, 64, 2, 2)
-            x = _add_conv(x, 2, 64, 2, 2)
-            x = _add_conv(x, 3, 64, 2, 2)
-            x = _add_conv(x, 4, 64, 2, 2)
-            x = _add_conv(x, 4, 64, 2, 2)
-            x = _add_conv(x, 4, 64, 2, 2)
+            x = _add_conv(x, 1, conv_size, 5, 1)
+            x = _add_conv(x, 2, conv_size, 5, 3)
+            x = _add_conv(x, 3, conv_size, 5, 3)
+            x = _add_conv(x, 4, conv_size, 5, 3)
             x = tf.squeeze(x, axis=2)
 
-            cells = [tf.contrib.rnn.GRUCell(128) for _ in range(num_rnn)]
+            cells = [tf.contrib.rnn.GRUCell(rnn_size) for _ in range(num_rnn)]
             cell = tf.contrib.rnn.MultiRNNCell(cells)
             cell = tf.contrib.rnn.OutputProjectionWrapper(cell, self.num_latent)
             cell = tf.contrib.rnn.FusedRNNCellAdaptor(cell, use_dynamic_rnn=True)
@@ -185,15 +183,13 @@ class QuestionGenerator(object):
         tf.summary.scalar('loss/latent', latent_pen)
 
         # Matrix multiplies to get the RNN hidden states.
-        x = tuple([_add_dense(x, i + 10, 128) for i in range(num_rnn)])
-
-        # Builds attention part from the encoded vector.
+        x = tuple([_add_dense(x, i + 10, rnn_size) for i in range(num_rnn)])
 
         # Saves the encoder state for later.
         enc_state = x
 
         # Builds the RNN decoder training function.
-        cells = [tf.contrib.rnn.GRUCell(128) for _ in range(num_rnn)]
+        cells = [tf.contrib.rnn.GRUCell(rnn_size) for _ in range(num_rnn)]
         cell = tf.contrib.rnn.MultiRNNCell(cells)
         cell = tf.contrib.rnn.OutputProjectionWrapper(cell, self.num_classes)
         train_decoder_fn = tf.contrib.seq2seq.simple_decoder_fn_train(x)
@@ -220,7 +216,7 @@ class QuestionGenerator(object):
         tf.summary.scalar('loss/total', self.loss)
 
         # Builds the training op.
-        optimizer = tf.train.AdamOptimizer(learning_rate=1e-3)
+        optimizer = tf.train.AdamOptimizer(learning_rate=1e-4)
         self.train_op = optimizer.minimize(self.loss)
 
         # Builds the RNN decoder inference function.
@@ -241,7 +237,7 @@ class QuestionGenerator(object):
             decoder_fn=infer_decoder_fn)
 
         # "Dreams" a question (reusing the existing dense layers).
-        generator_state = tuple([_add_dense(self.latent_pl, i + 10, 128)
+        generator_state = tuple([_add_dense(self.latent_pl, i + 10, rnn_size)
                                  for i in range(num_rnn)])
         generate_decoder_fn = tf.contrib.seq2seq.simple_decoder_fn_inference(
             output_fn=output_fn,
