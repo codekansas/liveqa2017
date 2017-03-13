@@ -28,29 +28,46 @@ tf.app.flags.DEFINE_integer('batches_per_epoch', 100,
                             'number of minibatches per training epoch')
 tf.app.flags.DEFINE_integer('nb_epoch', 10000,  # Goes through all data.
                             'number of epochs to train the model for')
-tf.app.flags.DEFINE_string('weights_save_path', '/tmp/qgen_weights.h5',
-                           'where to save the model')
 tf.app.flags.DEFINE_bool('rebuild_model', True,
                          'if set, reset the model weights')
+tf.app.flags.DEFINE_string('logdir', 'model/',
+                           'directory where model is saved')
 FLAGS = tf.app.flags.FLAGS
+
+
+def check_built(f):
+    """Function decorator that makes sure the model is built before calling."""
+
+    def wrapper(self, *args, **kwargs):
+        if not self._built:
+            self.build()
+
+        return f(self, *args, **kwargs)
+
+    return wrapper
 
 
 class QuestionGenerator(object):
     """Class implementing the question generator."""
 
     def __init__(self,
+                 sess,
                  input_len,
                  output_len,
                  num_classes,
                  num_latent=512,
+                 logdir=None,
                  only_cpu=False):
         """Constructs a new question generator.
 
         Args:
+            sess: the current TensorFlow session.
             input_len: int, the input length.
             output_len: int, the output length.
             num_classes: int, the number of classes in the model.
             num_latent: int, the number of latent dimensions.
+            logdir: str, the training directory (otherwise a new temporary one
+                is created).
             only_cpu: bool, if set, don't use the GPU.
         """
 
@@ -69,6 +86,10 @@ class QuestionGenerator(object):
 
         self._built = False
         self._weights = []
+
+        self._saver = None
+        self._sess = sess
+        self.logdir = logdir
 
     def get_weight(self, name, shape, init='glorot', device='gpu'):
         """Returns a new weight.
@@ -113,7 +134,7 @@ class QuestionGenerator(object):
 
         return weight
 
-    def build(self, sess, num_emb=100, num_rnn=2, rnn_size=512, conv_size=512):
+    def build(self, num_emb=100, num_rnn=2, rnn_size=512, conv_size=512):
         """Builds the model, initializing weights.
 
         TODO: Docstring.
@@ -252,9 +273,11 @@ class QuestionGenerator(object):
             decoder_fn=generate_decoder_fn)
 
         # Creates the log directory.
-        logdir = tempfile.mkdtemp()
-        sys.stdout.write('logdir: "%s"\n' % logdir)
-        self.summary_writer = tf.summary.FileWriter(logdir, sess.graph)
+        if self.logdir is None:
+            self.logdir = tempfile.mkdtemp()
+        sys.stdout.write('logdir: "%s"\n' % self.logdir)
+        summary_writer = tf.summary.FileWriter(self.logdir, self._sess.graph)
+        self.summary_writer = summary_writer
         self.summary_op = tf.summary.merge_all()
 
         # Creates the time variable on the CPU.
@@ -262,15 +285,17 @@ class QuestionGenerator(object):
             time = tf.Variable(0, dtype=tf.int64, name='time')
             self.time_op = time.assign(time + 1)
 
-        sess.run(tf.global_variables_initializer())
-
+        self._saver = tf.train.Saver()
+        self._sess.run(tf.global_variables_initializer())
         self._built = True
 
-    def train(self, sess, a_sample, q_sample, q_len):
+        return self
+
+    @check_built
+    def train(self, a_sample, q_sample, q_len):
         """Trains the model on the provided input data.
 
         Args:
-            sess: the active TensorFlow session containing the graph.
             a_sample: Numpy array with shape (batch_size, num_timesteps),
                 ints representing the encoded answer.
             q_sample: Numpy array with shape (batch_size, num_timesteps),
@@ -282,27 +307,24 @@ class QuestionGenerator(object):
             loss: float, the total loss of the model.
         """
 
-        if not self._built:
-            raise ValueError('Must build the model first.')
-
         feed_dict = {
             self.input_pl: a_sample,
             self.target_pl: q_sample[:, :np.max(q_len)],
             self.target_len_pl: q_len,
         }
 
-        _, current_time, summary, loss = sess.run(
+        _, current_time, summary, loss = self._sess.run(
             [self.train_op, self.time_op, self.summary_op, self.loss],
             feed_dict=feed_dict)
         self.summary_writer.add_summary(summary, current_time)
 
         return loss
 
-    def sample(self, sess, x):
+    @check_built
+    def sample(self, x):
         """Samples from the model.
 
         Args:
-            sess: the active TensorFlow session containing the graph.
             x: Numpy array with shape (batch_size, input_len), ints
                 representing the encoded question.
 
@@ -311,22 +333,19 @@ class QuestionGenerator(object):
                 probability distribution over characters.
         """
 
-        if not self._built:
-            raise ValueError('Must build the model first.')
-
         feed_dict = {
             self.input_pl: x,
         }
 
-        y, = sess.run([self.inferred_question], feed_dict=feed_dict)
+        y, = self._sess.run([self.inferred_question], feed_dict=feed_dict)
 
         return y
 
-    def generate(self, sess, x=None, nb_samples=None):
+    @check_built
+    def generate(self, x=None, nb_samples=None):
         """Generates a "dream" from the model.
 
         Args:
-            sess: the active TensorFlow session containing the graph.
             x: Numpy array with shape (batch_size, num_latent), the starting
                 latent representation.
             nb_samples: int, the number of samples to generate (if `x` is None).
@@ -335,9 +354,6 @@ class QuestionGenerator(object):
             y: Numpy array with shape (batch_size, output_len, num_classes),
                 probability distribution over characters.
         """
-
-        if not self._built:
-            raise ValueError('Must build the model first.')
 
         if x is None and nb_samples is None:
             raise ValueError('Either the latent vector `x` or the number of '
@@ -351,25 +367,35 @@ class QuestionGenerator(object):
             self.latent_pl: x,
         }
 
-        y, = sess.run([self.generated_question], feed_dict=feed_dict)
+        y, = self._sess.run([self.generated_question], feed_dict=feed_dict)
 
         return y
 
-    def load(self, save_loc):
-        """Loads the model from the desired location.
+    @check_built
+    def load(self, ignore_missing=False):
+        """Loads the model from the logdir.
 
-        TODO: Documentation.
+        Args:
+            ignore_missing: bool, if set, ignore when no save_dir exists,
+                otherwise raises an error.
         """
 
-        raise NotImplementedError()
+        ckpt = tf.train.get_checkpoint_state(self.logdir)
+        if ckpt and ckpt.model_checkpoint_path:
+            self._saver.restore(self._sess, ckpt.model_checkpoint_path)
+        elif ignore_missing:
+            return
+        elif not ckpt:
+            raise ValueError('No checkpoint found: "%s"' % self.logdir)
+        else:
+            raise ValueError('Checkpoint found, but no model checkpoint path '
+                             'in "%s"' % self.logdir)
 
-    def save(self, save_loc):
-        """Saves the model to the desired location.
+    @check_built
+    def save(self):
+        """Saves the model to the logdir."""
 
-        TODO: Documentation.
-        """
-
-        raise NotImplementedError()
+        self._saver.save(self._sess, self.logdir + 'model.ckpt')
 
     @property
     def input_pl(self):
@@ -403,6 +429,7 @@ class QuestionGenerator(object):
     def input_len(self):
         return self._input_len
 
+    @check_built
     @property
     def weights(self):
         return self._weights
@@ -414,45 +441,31 @@ def main(_):
     BATCH_SIZE = FLAGS.batch_size
     BATCHES_PER_EPOCH = FLAGS.batches_per_epoch
     NB_EPOCH = FLAGS.nb_epoch
-    WEIGHTS_SAVE_PATH = FLAGS.weights_save_path
     REBUILD_MODEL = FLAGS.rebuild_model
+    LOGDIR = FLAGS.logdir
 
     # Interactive session to avoid unpleasant parts.
     sess = tf.InteractiveSession()
 
-    model = QuestionGenerator(yahoo.ANSWER_MAXLEN,
+    model = QuestionGenerator(sess,
+                              yahoo.ANSWER_MAXLEN,
                               yahoo.QUESTION_TITLE_MAXLEN,
-                              yahoo.NUM_TOKENS)
-    model.build(sess)
-
-    if not REBUILD_MODEL and os.path.exists(WEIGHTS_SAVE_PATH):
-        sys.stdout.write('Loading model weights: "%s"\n' % WEIGHTS_SAVE_PATH)
-        sys.stdout.flush()
-        model.load_weights(MODEL_SAVE_PATH)
-    elif not REBUILD_MODEL:
-        sys.stdout.write('No weights found: "%s"\n' % WEIGHTS_SAVE_PATH)
-        sys.stdout.flush()
+                              yahoo.NUM_TOKENS,
+                              logdir=LOGDIR)
+    model.load()
 
     raw_input('Press <ENTER> to begin training')
 
     # Gets the data iterator.
     data_iter = yahoo.iterate_answer_to_question(BATCH_SIZE)
-    sample_iter = yahoo.iterate_answer_to_question(1)
-
-    # Builds the model sampler checkpoint.
-    a_sample, q_sample, _ = data_iter.next()
+    sample_iter = yahoo.iterate_answer_to_question(1)  # For visualization.
 
     total_start_time = datetime.datetime.now()
-
     for epoch_idx in xrange(1, NB_EPOCH + 1):
-
         start_time = datetime.datetime.now()
-
         for batch_idx in xrange(1, BATCHES_PER_EPOCH + 1):
             a_sample, q_sample, q_len = data_iter.next()
-
-            loss = model.train(sess, a_sample, q_sample, q_len)
-
+            loss = model.train(a_sample, q_sample, q_len)
             sys.stdout.write('epoch %d: %d / %d loss = %.3e       \r'
                              % (epoch_idx, batch_idx, BATCHES_PER_EPOCH, loss))
             sys.stdout.flush()
@@ -461,10 +474,13 @@ def main(_):
         total_time_passed = (datetime.datetime.now()
                              - total_start_time).total_seconds()
 
+        # Saves the current model weights.
+        model.save()
+
         # Samples from the model.
         a_sample, q_sample, _ = sample_iter.next()
-        q_pred = model.sample(sess, a_sample)
-        q_gen = model.generate(sess, nb_samples=1)
+        q_pred = model.sample(a_sample)
+        q_gen = model.generate(nb_samples=1)
 
         s = []
         s.append('epoch %d / %d' % (epoch_idx, NB_EPOCH))
