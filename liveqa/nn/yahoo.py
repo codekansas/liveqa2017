@@ -15,6 +15,7 @@ import sys
 import re
 import xml.etree.cElementTree as ET
 
+import tensorflow as tf
 import numpy as np
 
 # Constants.
@@ -41,18 +42,23 @@ if not os.path.exists(DATA_PATH):
                        'files, run:  cat FullOct2007.xml.part1 '
                        'FullOct2007.xml.part2 > FullOct2007.xml' % DATA_PATH)
 
+# Extra tokens:
+#   PADDING: 0
+#   OUT_OF_VOCAB: 1
+#   START_OF_SEQUENCE: 2
+#   END_OF_SEQUENCE: 3
 TEXT = ('abcdefghijklmnopqrstuvwxyz'
         'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         '1234567890'
         '?.!@#$%^&*()/\\|\'"-_=+ ')
-TOKENS = dict((c, i + 2) for i, c in enumerate(TEXT))
-NUM_TOKENS = len(TOKENS) + 2
+TOKENS = dict((c, i + 4) for i, c in enumerate(TEXT))
+NUM_TOKENS = len(TOKENS) + 4
 
 
 def tokenize(text, pad_len=None):
     """Converts text to tokens."""
 
-    idxs = [TOKENS.get(c, 1) for c in text]
+    idxs = [2] + [TOKENS.get(c, 1) for c in text] + [3]
 
     if pad_len is not None:
         idxs = idxs[:pad_len]
@@ -67,7 +73,7 @@ def detokenize(tokens, argmax=False):
     if argmax:
         tokens = np.argmax(tokens, axis=-1)
 
-    return ''.join(['' if t < 2 else TEXT[t-2] for t in tokens])
+    return ''.join(['' if t < 4 else TEXT[t-4] for t in tokens])
 
 
 def clean_text(text):
@@ -99,12 +105,14 @@ def iterate_qa_pairs(convert_to_tokens=True):
         content = clean_text('' if content is None else content.text)
         bestanswer = clean_text('' if bestanswer is None else bestanswer.text)
 
+        subject_len = len(subject)
+
         if convert_to_tokens:
             subject = tokenize(subject, pad_len=QUESTION_TITLE_MAXLEN)
             content = tokenize(content, pad_len=QUESTION_BODY_MAXLEN)
             bestanswer = tokenize(bestanswer, pad_len=ANSWER_MAXLEN)
 
-        return subject, content, bestanswer
+        return subject, content, bestanswer, subject_len
 
     with open(DATA_PATH, 'r') as f:
         parser = ET.iterparse(f)
@@ -127,16 +135,18 @@ def iterate_qa_data(batch_size):
 
     iterable = itertools.cycle(iterate_qa_pairs())
 
-    qtitles, qbodies, abodies = [], [], []
+    qtitles, qbodies, abodies, qlen = [], [], [], []
 
-    for i, (qtitle, qbody, abody) in enumerate(iterable, 1):
+    for i, (qtitle, qbody, abody, qlen) in enumerate(iterable, 1):
         qtitles.append(qtitle)
         qbodies.append(qbody)
         abodies.append(abody)
+        qlens.append(qlen)
 
         if i % batch_size == 0:
-            yield np.asarray(qtitles), np.asarray(qbodies), np.asarray(abodies)
-            qtitles, qbodies, abodies = [], [], []
+            yield (np.asarray(qtitles), np.asarray(qbodies),
+                   np.asarray(abodies), np.asarray(qlens))
+            qtitles, qbodies, abodies, qlens = [], [], [], []
 
 
 def iterate_answer_to_question(batch_size):
@@ -152,12 +162,13 @@ def iterate_answer_to_question(batch_size):
 
     iterable = itertools.cycle(iterate_qa_pairs())
 
-    qtitles, abodies = [], []
+    qtitles, abodies, qlens = [], [], []
 
-    for i, (qtitle, _, abody) in enumerate(iterable, 1):
+    for i, (qtitle, _, abody, qlen) in enumerate(iterable, 1):
         qtitles.append(qtitle)
         abodies.append(abody)
+        qlens.append(qlen)
 
         if i % batch_size == 0:
-            yield np.asarray(abodies), np.expand_dims(np.asarray(qtitles), -1)
-            qtitles, abodies = [], []
+            yield (np.asarray(abodies), np.asarray(qtitles), np.asarray(qlens))
+            qtitles, abodies, qlens = [], [], []
