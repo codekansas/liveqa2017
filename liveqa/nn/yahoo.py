@@ -43,26 +43,27 @@ if not os.path.exists(DATA_PATH):
                        'FullOct2007.xml.part2 > FullOct2007.xml' % DATA_PATH)
 
 # Extra tokens:
-#   PADDING: 0
-#   OUT_OF_VOCAB: 1
-#   START_OF_SEQUENCE: 2
-#   END_OF_SEQUENCE: 3
-TEXT = ('abcdefghijklmnopqrstuvwxyz'
+# PADDING = 0
+OUT_OF_VOCAB = 0
+NUM_EXTRA = 1
+TEXT = ('@#abcdefghijklmnopqrstuvwxyz'
         'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         '1234567890'
-        '?.!@#$%^&*()/\\|\'"-_=+ ')
-TOKENS = dict((c, i + 4) for i, c in enumerate(TEXT))
-NUM_TOKENS = len(TOKENS) + 4
+        '?.!$%^&*()/\\|:\'"-_=+ ')
+START_TOKEN, END_TOKEN = TEXT[0], TEXT[1]
+START_IDX, END_IDX = NUM_EXTRA, NUM_EXTRA + 1
+TOKENS = dict((c, i + NUM_EXTRA) for i, c in enumerate(TEXT))
+NUM_TOKENS = len(TOKENS) + NUM_EXTRA
 
 
 def tokenize(text, pad_len=None):
     """Converts text to tokens."""
 
-    idxs = [2] + [TOKENS.get(c, 1) for c in text] + [3]
+    idxs = [TOKENS.get(c, OUT_OF_VOCAB) for c in text]
 
     if pad_len is not None:
         idxs = idxs[:pad_len]
-        idxs += [0] * (pad_len - len(idxs))
+        idxs += [END_IDX] * (pad_len - len(idxs))
 
     return idxs
 
@@ -73,14 +74,19 @@ def detokenize(tokens, argmax=False):
     if argmax:
         tokens = np.argmax(tokens, axis=-1)
 
-    return ''.join(['' if t < 4 else TEXT[t-4] for t in tokens])
+    # Remove end indices.
+    tokens = [t for t in tokens if t != END_IDX]
+
+    return ''.join(['' if t < NUM_EXTRA else TEXT[t-NUM_EXTRA]
+                    for t in tokens])
 
 
 def clean_text(text):
     """Cleans text of HTML, double spaces, etc."""
 
     text = re.sub('(\<.+?\>|\n|  +)+', ' ', text)
-
+    text = re.sub(START_TOKEN + '|' + END_TOKEN, '', text)
+    # text = START_TOKEN + text + END_TOKEN
     return text
 
 
@@ -93,7 +99,8 @@ def iterate_qa_pairs(convert_to_tokens=True):
     Yields:
         subject: the question title (max length = QUESTION_TITLE_MAXLEN)
         content: the question body (max length = QUESTION_BODY_MAXLEN)
-        bestanswer: the body of the best answer (max length = ANSWER_MAXLEN)
+        bestanswer: the body of the best answer
+            (max length = ANSWER_MAXLEN)
     """
 
     def _parse_document(elem):
@@ -103,9 +110,10 @@ def iterate_qa_pairs(convert_to_tokens=True):
 
         subject = clean_text('' if subject is None else subject.text)
         content = clean_text('' if content is None else content.text)
-        bestanswer = clean_text('' if bestanswer is None else bestanswer.text)
+        bestanswer = clean_text('' if bestanswer is None
+                                else bestanswer.text)
 
-        subject_len = len(subject)
+        subject_len = len(subject) + 1
 
         if convert_to_tokens:
             subject = tokenize(subject, pad_len=QUESTION_TITLE_MAXLEN)
@@ -128,9 +136,12 @@ def iterate_qa_data(batch_size):
         batch_size: int, the number of samples per batch.
 
     Yields:
-        subject: numpy array with shape (batch_size, QUESTION_TITLE_MAXLEN)
-        content: numpy array with shape (batch_size, QUESTION_BODY_MAXLEN)
-        bestanswer: numpy array with shape (batch_size, ANSWER_MAXLEN)
+        subject: numpy array with shape
+            (batch_size, QUESTION_TITLE_MAXLEN)
+        content: numpy array with shape
+            (batch_size, QUESTION_BODY_MAXLEN)
+        bestanswer: numpy array with shape
+            (batch_size, ANSWER_MAXLEN)
     """
 
     iterable = itertools.cycle(iterate_qa_pairs())
@@ -156,8 +167,10 @@ def iterate_answer_to_question(batch_size):
         batch_size: int, the number of samples per batch.
 
     Yields:
-        bestanswer: numpy array with shape (batch_size, ANSWER_MAXLEN)
-        subject: numpy array with shape (batch_size, QUESTION_TITLE_MAXLEN)
+        bestanswer: numpy array with shape
+            (batch_size, ANSWER_MAXLEN)
+        subject: numpy array with shape
+            (batch_size, QUESTION_TITLE_MAXLEN)
     """
 
     iterable = itertools.cycle(iterate_qa_pairs())
@@ -170,5 +183,7 @@ def iterate_answer_to_question(batch_size):
         qlens.append(qlen)
 
         if i % batch_size == 0:
-            yield (np.asarray(abodies), np.asarray(qtitles), np.asarray(qlens))
+            yield (np.asarray(abodies),
+                   np.asarray(qtitles),
+                   np.asarray(qlens))
             qtitles, abodies, qlens = [], [], []
