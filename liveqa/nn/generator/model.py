@@ -34,7 +34,6 @@ class QuestionGenerator(object):
                  input_len,
                  output_len,
                  num_classes,
-                 num_latent=512,
                  logdir=None,
                  only_cpu=False):
         """Constructs a new question generator.
@@ -44,7 +43,6 @@ class QuestionGenerator(object):
             input_len: int, the input length.
             output_len: int, the output length.
             num_classes: int, the number of classes in the model.
-            num_latent: int, the number of latent dimensions.
             logdir: str, the training directory (otherwise a new temporary one
                 is created).
             only_cpu: bool, if set, don't use the GPU.
@@ -54,14 +52,13 @@ class QuestionGenerator(object):
         self._output_len = output_len
         self._num_classes = num_classes
         self._only_cpu = only_cpu
-        self._num_latent = num_latent
 
-        input_shape = (None, input_len)
+        input_shape = (None, None)
         output_shape = (None, None)
         self._input_pl = tf.placeholder(tf.int32, input_shape)
         self._target_pl = tf.placeholder(tf.int32, output_shape)
+        self._input_len_pl = tf.placeholder(tf.int32, (None,))
         self._target_len_pl = tf.placeholder(tf.int32, (None,))
-        self._latent_pl = tf.placeholder(tf.float32, (None, num_latent))
 
         self._built = False
         self._weights = []
@@ -113,7 +110,7 @@ class QuestionGenerator(object):
 
         return weight
 
-    def build(self, num_emb=100, num_rnn=2, rnn_size=512, conv_size=512):
+    def build(self, num_rnn=2, rnn_size=256):
         """Builds the model, initializing weights.
 
         TODO: Docstring.
@@ -127,74 +124,21 @@ class QuestionGenerator(object):
         # Converts input to one-hot encoding.
         emb = tf.eye(self.num_classes)
         x = tf.nn.embedding_lookup(emb, x)
-        x = tf.expand_dims(x, axis=2)  # (batch_size, time, 1, num_emb)
-
-        def _add_conv(x, layer_num, nb_filters, filt_length, pool_length):
-            in_channels = x.get_shape()[3].value
-            filt = self.get_weight('filter_%d' % layer_num,
-                                   (filt_length, 1, in_channels, nb_filters))
-            x = tf.nn.conv2d(x, filt, (1, 1, 1, 1), 'VALID')
-            pool_shape = (1, pool_length, 1, 1)
-            x = tf.nn.max_pool(x, pool_shape, pool_shape, 'VALID')
-            return x
-
-        def _add_dense(x, layer_num, nb_outputs,
-                       init='glorot', activation='tanh'):
-            in_channels = x.get_shape()[1].value
-            w = self.get_weight('w_%d' % layer_num,
-                                (in_channels, nb_outputs), init=init)
-            b = self.get_weight('b_%d' % layer_num,
-                                (nb_outputs,), init='zero')
-
-            try:
-                activation = getattr(tf, activation)
-            except Exception:
-                activation = getattr(tf.nn, activation)
-
-            return activation(tf.matmul(x, w) + b)
+        x = tf.transpose(x, (1, 0, 2))  # Put into time major.
 
         with tf.variable_scope('encoder'):
-            x = _add_conv(x, 1, conv_size, 5, 1)
-            x = _add_conv(x, 2, conv_size, 5, 3)
-            x = _add_conv(x, 3, conv_size, 5, 3)
-            x = _add_conv(x, 4, conv_size, 5, 3)
-            x = tf.squeeze(x, axis=2)
-
             cells = [tf.contrib.rnn.GRUCell(rnn_size) for _ in range(num_rnn)]
             cell = tf.contrib.rnn.MultiRNNCell(cells)
-            cell = tf.contrib.rnn.OutputProjectionWrapper(cell, self.num_latent)
-            cell = tf.contrib.rnn.FusedRNNCellAdaptor(cell, use_dynamic_rnn=True)
+            cell = tf.contrib.rnn.OutputProjectionWrapper(cell,
+                                                          self.num_classes)
+            cell = tf.contrib.rnn.FusedRNNCellAdaptor(cell,
+                                                      use_dynamic_rnn=True)
+            _, enc_states = cell(x,
+                                 dtype=tf.float32,
+                                 sequence_length=self.input_len_pl)
 
-            x, _ = cell(tf.transpose(x, (1, 0, 2)), dtype=tf.float32)
-            x = x[-1]  # Get the last timestep.
-
-            # Latent vector inspired by variational autoencoder.
-            mu = _add_dense(x, 1, self.num_latent,
-                            activation='identity', init='zero')
-            sigma = _add_dense(x, 2, self.num_latent,
-                               activation='identity', init='zero')
-            eps = tf.random_normal(tf.shape(sigma), 0, 1,
-                                   dtype=tf.float32,
-                                   name='eps')
-            x = mu + tf.sqrt(tf.exp(sigma)) * eps
-
-        # Add variational penalty.
-        latent_pen = -0.5 * tf.reduce_sum(1 + sigma
-                                          - tf.square(mu)
-                                          - tf.exp(sigma))
-        tf.summary.scalar('loss/latent', latent_pen)
-
-        # Matrix multiplies to get the RNN hidden states.
-        x = tuple([_add_dense(x, i + 10, rnn_size) for i in range(num_rnn)])
-
-        # Saves the encoder state for later.
-        enc_state = x
-
-        # Builds the RNN decoder training function.
-        cells = [tf.contrib.rnn.GRUCell(rnn_size) for _ in range(num_rnn)]
-        cell = tf.contrib.rnn.MultiRNNCell(cells)
-        cell = tf.contrib.rnn.OutputProjectionWrapper(cell, self.num_classes)
-        train_decoder_fn = tf.contrib.seq2seq.simple_decoder_fn_train(x)
+        train_decoder_fn = tf.contrib.seq2seq.simple_decoder_fn_train(
+            encoder_state=enc_states)
 
         # Appends the start token to the first position of the target_pl.
         start_idx = tf.ones((tf.shape(self.target_pl)[0], 1), dtype=tf.int32)
@@ -202,30 +146,32 @@ class QuestionGenerator(object):
         seq_vals = tf.concat([start_idx, self.target_pl], axis=1)
         seq_vals = tf.nn.embedding_lookup(emb, seq_vals)
 
+        # Builds the RNN decoder training function.
+        cells = [tf.contrib.rnn.GRUCell(rnn_size) for _ in range(num_rnn)]
+        cell = tf.contrib.rnn.MultiRNNCell(cells)
+        cell = tf.contrib.rnn.OutputProjectionWrapper(cell, self.num_classes)
+
         x, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
             cell=cell,
             decoder_fn=train_decoder_fn,
             inputs=seq_vals,
             sequence_length=self.target_len_pl)
 
+        # Masks all the values beyond the answer.
         weights = tf.sequence_mask(self.target_len_pl, dtype=tf.float32)
 
-        sequence_loss = tf.contrib.seq2seq.sequence_loss(
+        self.loss = tf.contrib.seq2seq.sequence_loss(
             x, self.target_pl, weights)
-        tf.summary.scalar('loss/sequence', sequence_loss)
-
-        self.loss = sequence_loss + latent_pen
-        tf.summary.scalar('loss/total', self.loss)
+        tf.summary.scalar('loss', self.loss)
 
         # Builds the training op.
         optimizer = tf.train.AdamOptimizer(learning_rate=1e-4)
         self.train_op = optimizer.minimize(self.loss)
 
         # Builds the RNN decoder inference function.
-        output_fn = lambda x: tf.identity(x)
         infer_decoder_fn = tf.contrib.seq2seq.simple_decoder_fn_inference(
-            output_fn=output_fn,
-            encoder_state=enc_state,
+            output_fn=tf.identity,
+            encoder_state=enc_states,
             embeddings=emb,
             start_of_sequence_id=yahoo.START_IDX,
             end_of_sequence_id=yahoo.END_IDX,
@@ -237,21 +183,6 @@ class QuestionGenerator(object):
         self.inferred_question, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
             cell=cell,
             decoder_fn=infer_decoder_fn)
-
-        # "Dreams" a question (reusing the existing dense layers).
-        generator_state = tuple([_add_dense(self.latent_pl, i + 10, rnn_size)
-                                 for i in range(num_rnn)])
-        generate_decoder_fn = tf.contrib.seq2seq.simple_decoder_fn_inference(
-            output_fn=output_fn,
-            encoder_state=generator_state,
-            embeddings=emb,
-            start_of_sequence_id=yahoo.START_IDX,
-            end_of_sequence_id=yahoo.END_IDX,
-            maximum_length=self.output_len,
-            num_decoder_symbols=self.num_classes)
-        self.generated_question, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
-            cell=cell,
-            decoder_fn=generate_decoder_fn)
 
         # Creates the log directory.
         if self.logdir is None:
@@ -273,25 +204,28 @@ class QuestionGenerator(object):
         return self
 
     @check_built
-    def train(self, a_sample, q_sample, q_len):
+    def train(self, qsamples, asamples, qlens, alens):
         """Trains the model on the provided input data.
 
         Args:
-            a_sample: Numpy array with shape (batch_size, num_timesteps),
-                ints representing the encoded answer.
-            q_sample: Numpy array with shape (batch_size, num_timesteps),
+            qsamples: Numpy array with shape (batch_size, num_timesteps),
                 ints representing the encoded question.
-            q_len: Numpy array with shape (batch_size), ints representing
+            asamples: Numpy array with shape (batch_size, num_timesteps),
+                ints representing the encoded answer.
+            qlens: Numpy array with shape (batch_size), ints representing
                 the length of the questions.
+            alens: Numpy array with shape (batch_size), ints representing
+                the length of the answers.
 
         Returns:
             loss: float, the total loss of the model.
         """
 
         feed_dict = {
-            self.input_pl: a_sample,
-            self.target_pl: q_sample[:, :np.max(q_len)],
-            self.target_len_pl: q_len,
+            self.input_pl: asamples[:, :np.max(alens)],
+            self.input_len_pl: alens,
+            self.target_pl: qsamples[:, :np.max(qlens)],
+            self.target_len_pl: qlens,
         }
 
         _, current_time, summary, loss = self._sess.run(
@@ -302,53 +236,26 @@ class QuestionGenerator(object):
         return loss
 
     @check_built
-    def sample(self, x):
+    def sample(self, x, xlen):
         """Samples from the model.
 
         Args:
             x: Numpy array with shape (batch_size, input_len), ints
-                representing the encoded question.
+                representing the encoded answer.
+            xlens: Numpy array with shape (batch_size), ints representing
+                the length of the answers.
 
         Returns:
             y: Numpy array with shape (batch_size, output_len, num_classes),
-                probability distribution over characters.
+                probability distribution over characters in questions.
         """
 
         feed_dict = {
             self.input_pl: x,
+            self.input_len_pl: xlen,
         }
 
-        y, = self._sess.run([self.inferred_question], feed_dict=feed_dict)
-
-        return y
-
-    @check_built
-    def generate(self, x=None, nb_samples=None):
-        """Generates a "dream" from the model.
-
-        Args:
-            x: Numpy array with shape (batch_size, num_latent), the starting
-                latent representation.
-            nb_samples: int, the number of samples to generate (if `x` is None).
-
-        Returns:
-            y: Numpy array with shape (batch_size, output_len, num_classes),
-                probability distribution over characters.
-        """
-
-        if x is None and nb_samples is None:
-            raise ValueError('Either the latent vector `x` or the number of '
-                             'samples to produce `nb_samples` must be '
-                             'specified.')
-
-        if x is None:
-            x = np.random.normal(size=(nb_samples, self.num_latent))
-
-        feed_dict = {
-            self.latent_pl: x,
-        }
-
-        y, = self._sess.run([self.generated_question], feed_dict=feed_dict)
+        y = self._sess.run(self.inferred_question, feed_dict=feed_dict)
 
         return y
 
@@ -383,20 +290,16 @@ class QuestionGenerator(object):
         return self._input_pl
 
     @property
+    def input_len_pl(self):
+        return self._input_len_pl
+
+    @property
     def target_pl(self):
         return self._target_pl
 
     @property
     def target_len_pl(self):
         return self._target_len_pl
-
-    @property
-    def latent_pl(self):
-        return self._latent_pl
-
-    @property
-    def num_latent(self):
-        return self._num_latent
 
     @property
     def num_classes(self):

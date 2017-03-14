@@ -19,7 +19,7 @@ import tensorflow as tf
 # Defines command line flags.
 tf.app.flags.DEFINE_integer('batch_size', 100,
                             'size of each training minibatch.')
-tf.app.flags.DEFINE_integer('batches_per_epoch', 32,
+tf.app.flags.DEFINE_integer('batches_per_epoch', 100,
                             'number of minibatches per training epoch')
 tf.app.flags.DEFINE_integer('nb_epoch', 10000,  # Goes through all data.
                             'number of epochs to train the model for')
@@ -58,8 +58,8 @@ def main(_):
     for epoch_idx in xrange(1, NB_EPOCH + 1):
         start_time = datetime.datetime.now()
         for batch_idx in xrange(1, BATCHES_PER_EPOCH + 1):
-            a_sample, q_sample, q_len = data_iter.next()
-            loss = model.train(a_sample, q_sample, q_len)
+            qsamples, asamples, qlens, alens = data_iter.next()
+            loss = model.train(qsamples, asamples, qlens, alens)
             sys.stdout.write('epoch %d: %d / %d loss = %.3e       \r'
                              % (epoch_idx, batch_idx, BATCHES_PER_EPOCH, loss))
             sys.stdout.flush()
@@ -72,17 +72,15 @@ def main(_):
         model.save()
 
         # Samples from the model.
-        a_sample, q_sample, _ = sample_iter.next()
-        q_pred = model.sample(a_sample)
-        q_gen = model.generate(nb_samples=1)
+        qsamples, asamples, _, alens = sample_iter.next()
+        qpred = model.sample(asamples, alens)
 
         s = []
         s.append('epoch %d / %d' % (epoch_idx, NB_EPOCH))
         s.append('%d (%d) seconds' % (int(time_passed), total_time_passed))
-        s.append('answer: "%s"' % yahoo.detokenize(a_sample[0]))
-        s.append('target: "%s"' % yahoo.detokenize(q_sample[0], argmax=False))
-        s.append('pred: "%s"' % yahoo.detokenize(q_pred[0], argmax=True))
-        s.append('generate: "%s"' % yahoo.detokenize(q_gen[0], argmax=True))
+        s.append('answer: "%s"' % yahoo.detokenize(asamples[0]))
+        s.append('target: "%s"' % yahoo.detokenize(qsamples[0], argmax=False))
+        s.append('pred: "%s"' % yahoo.detokenize(qpred[0], argmax=True))
         sys.stdout.write(' | '.join(s) + '\n')
 
 

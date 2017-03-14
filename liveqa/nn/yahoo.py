@@ -21,7 +21,7 @@ import numpy as np
 # Constants.
 QUESTION_TITLE_MAXLEN = 140
 QUESTION_BODY_MAXLEN = 500
-ANSWER_MAXLEN = 500
+ANSWER_MAXLEN = 140
 DATA_ENV_NAME = 'YAHOO_DATA'  # Directory containing the Yahoo data, unzipped.
 YAHOO_L6_URL = 'http://webscope.sandbox.yahoo.com/catalog.php?datatype=l'
 
@@ -114,50 +114,22 @@ def iterate_qa_pairs(convert_to_tokens=True):
                                 else bestanswer.text)
 
         subject_len = min(len(subject) + 1, QUESTION_TITLE_MAXLEN)
+        content_len = min(len(content) + 1, QUESTION_BODY_MAXLEN)
+        bestanswer_len = min(len(bestanswer) + 1, ANSWER_MAXLEN)
 
         if convert_to_tokens:
             subject = tokenize(subject, pad_len=QUESTION_TITLE_MAXLEN)
             content = tokenize(content, pad_len=QUESTION_BODY_MAXLEN)
             bestanswer = tokenize(bestanswer, pad_len=ANSWER_MAXLEN)
 
-        return subject, content, bestanswer, subject_len
+        return (subject, content, bestanswer,
+                subject_len, content_len, bestanswer_len)
 
     with open(DATA_PATH, 'r') as f:
         parser = ET.iterparse(f)
         for event, elem in parser:
             if elem.tag == 'document':
                 yield _parse_document(elem)
-
-
-def iterate_qa_data(batch_size):
-    """Iterates through question-answer data as Numpy arrays.
-
-    Args:
-        batch_size: int, the number of samples per batch.
-
-    Yields:
-        subject: numpy array with shape
-            (batch_size, QUESTION_TITLE_MAXLEN)
-        content: numpy array with shape
-            (batch_size, QUESTION_BODY_MAXLEN)
-        bestanswer: numpy array with shape
-            (batch_size, ANSWER_MAXLEN)
-    """
-
-    iterable = itertools.cycle(iterate_qa_pairs())
-
-    qtitles, qbodies, abodies, qlen = [], [], [], []
-
-    for i, (qtitle, qbody, abody, qlen) in enumerate(iterable, 1):
-        qtitles.append(qtitle)
-        qbodies.append(qbody)
-        abodies.append(abody)
-        qlens.append(qlen)
-
-        if i % batch_size == 0:
-            yield (np.asarray(qtitles), np.asarray(qbodies),
-                   np.asarray(abodies), np.asarray(qlens))
-            qtitles, qbodies, abodies, qlens = [], [], [], []
 
 
 def iterate_answer_to_question(batch_size):
@@ -175,15 +147,17 @@ def iterate_answer_to_question(batch_size):
 
     iterable = itertools.cycle(iterate_qa_pairs())
 
-    qtitles, abodies, qlens = [], [], []
+    qtitles, abodies, qlens, alens = [], [], [], []
 
-    for i, (qtitle, _, abody, qlen) in enumerate(iterable, 1):
+    for i, (qtitle, _, abody, qlen, _, alen) in enumerate(iterable, 1):
         qtitles.append(qtitle)
         abodies.append(abody)
+        alens.append(alen)
         qlens.append(qlen)
 
         if i % batch_size == 0:
-            yield (np.asarray(abodies),
-                   np.asarray(qtitles),
-                   np.asarray(qlens))
-            qtitles, abodies, qlens = [], [], []
+            yield (np.asarray(qtitles),
+                   np.asarray(abodies),
+                   np.asarray(qlens),
+                   np.asarray(alens))
+            qtitles, abodies, qlens, alens = [], [], [], []
