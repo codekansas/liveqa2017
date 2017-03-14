@@ -1,38 +1,17 @@
-#!/usr/bin/env python
-"""
-Components for the question generator network.
-
-Reference code for serving models:
-https://github.com/tensorflow/serving/blob/master/tensorflow_serving/example/mnist_saved_model.py
-"""
+"""Components for the question generator network."""
 
 from __future__ import division
-from __future__ import print_function
 
-import datetime
-import os
+if __name__ == '__main__':
+    raise RuntimeError('Cannot run this file directly.')
+
 import sys
 import tempfile
 
-import tensorflow as tryef
+from .. import yahoo
 
 import tensorflow as tf
 import numpy as np
-
-import yahoo
-
-# Defines command line flags.
-tf.app.flags.DEFINE_integer('batch_size', 100,
-                            'size of each training minibatch.')
-tf.app.flags.DEFINE_integer('batches_per_epoch', 100,
-                            'number of minibatches per training epoch')
-tf.app.flags.DEFINE_integer('nb_epoch', 10000,  # Goes through all data.
-                            'number of epochs to train the model for')
-tf.app.flags.DEFINE_bool('rebuild_model', True,
-                         'if set, reset the model weights')
-tf.app.flags.DEFINE_string('logdir', 'model/',
-                           'directory where model is saved')
-FLAGS = tf.app.flags.FLAGS
 
 
 def check_built(f):
@@ -194,7 +173,9 @@ class QuestionGenerator(object):
                             activation='identity', init='zero')
             sigma = _add_dense(x, 2, self.num_latent,
                                activation='identity', init='zero')
-            eps = tf.random_normal(tf.shape(sigma), 0, 1, dtype=tf.float32)
+            eps = tf.random_normal(tf.shape(sigma), 0, 1,
+                                   dtype=tf.float32,
+                                   name='eps')
             x = mu + tf.sqrt(tf.exp(sigma)) * eps
 
         # Add variational penalty.
@@ -433,64 +414,3 @@ class QuestionGenerator(object):
     @property
     def weights(self):
         return self._weights
-
-
-def main(_):
-
-    # Constants.
-    BATCH_SIZE = FLAGS.batch_size
-    BATCHES_PER_EPOCH = FLAGS.batches_per_epoch
-    NB_EPOCH = FLAGS.nb_epoch
-    REBUILD_MODEL = FLAGS.rebuild_model
-    LOGDIR = FLAGS.logdir
-
-    # Interactive session to avoid unpleasant parts.
-    sess = tf.InteractiveSession()
-
-    model = QuestionGenerator(sess,
-                              yahoo.ANSWER_MAXLEN,
-                              yahoo.QUESTION_TITLE_MAXLEN,
-                              yahoo.NUM_TOKENS,
-                              logdir=LOGDIR)
-    model.load()
-
-    raw_input('Press <ENTER> to begin training')
-
-    # Gets the data iterator.
-    data_iter = yahoo.iterate_answer_to_question(BATCH_SIZE)
-    sample_iter = yahoo.iterate_answer_to_question(1)  # For visualization.
-
-    total_start_time = datetime.datetime.now()
-    for epoch_idx in xrange(1, NB_EPOCH + 1):
-        start_time = datetime.datetime.now()
-        for batch_idx in xrange(1, BATCHES_PER_EPOCH + 1):
-            a_sample, q_sample, q_len = data_iter.next()
-            loss = model.train(a_sample, q_sample, q_len)
-            sys.stdout.write('epoch %d: %d / %d loss = %.3e       \r'
-                             % (epoch_idx, batch_idx, BATCHES_PER_EPOCH, loss))
-            sys.stdout.flush()
-
-        time_passed = (datetime.datetime.now() - start_time).total_seconds()
-        total_time_passed = (datetime.datetime.now()
-                             - total_start_time).total_seconds()
-
-        # Saves the current model weights.
-        model.save()
-
-        # Samples from the model.
-        a_sample, q_sample, _ = sample_iter.next()
-        q_pred = model.sample(a_sample)
-        q_gen = model.generate(nb_samples=1)
-
-        s = []
-        s.append('epoch %d / %d' % (epoch_idx, NB_EPOCH))
-        s.append('%d (%d) seconds' % (int(time_passed), total_time_passed))
-        s.append('answer: "%s"' % yahoo.detokenize(a_sample[0]))
-        s.append('target: "%s"' % yahoo.detokenize(q_sample[0], argmax=False))
-        s.append('pred: "%s"' % yahoo.detokenize(q_pred[0], argmax=True))
-        s.append('generate: "%s"' % yahoo.detokenize(q_gen[0], argmax=True))
-        sys.stdout.write(' | '.join(s) + '\n')
-
-
-if __name__ == '__main__':
-    tf.app.run()
