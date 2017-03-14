@@ -76,7 +76,9 @@ def main(_):
         qpred = model.sample(asamples, alens)
 
         s = []
-        s.append('epoch %d / %d' % (epoch_idx, NB_EPOCH))
+        s.append('epoch %d / %d, seen %d' %
+                 (epoch_idx, NB_EPOCH,
+                  epoch_idx * BATCH_SIZE * BATCHES_PER_EPOCH))
         s.append('%d (%d) seconds' % (int(time_passed), total_time_passed))
         s.append('answer: "%s"' % yahoo.detokenize(asamples[0]))
         s.append('target: "%s"' % yahoo.detokenize(qsamples[0], argmax=False))

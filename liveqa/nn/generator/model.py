@@ -41,9 +41,6 @@ class AttentionCellWrapper2D(tf.contrib.rnn.RNNCell):
                 the vector to pay attention to.
         """
 
-        if not isinstance(cell, tf.contrib.rnn.GRUCell):
-            raise TypeError('The parameter cell is not a GRUCell.')
-
         self._cell = cell
         self._attn_vec = attn_vec
 
@@ -150,7 +147,7 @@ class QuestionGenerator(object):
 
         return weight
 
-    def build(self, num_rnn=2, rnn_size=256, infer_noise=0.2):
+    def build(self, num_rnn=2, rnn_size=256):
         """Builds the model, initializing weights.
 
         TODO: Docstring.
@@ -162,26 +159,29 @@ class QuestionGenerator(object):
         x = self.input_pl  # Represents the output after each layer.
 
         # Converts input to one-hot encoding.
-        emb = tf.eye(self.num_classes)
+        emb = self.get_weight('emb', (self.num_classes, self.num_classes),
+                              init='eye')
         x = tf.nn.embedding_lookup(emb, x)
 
         def _add_conv(x, layer_num, nb_filters, filt_length, pool_length):
             in_channels = x.get_shape()[3].value
             filt = self.get_weight('filter_%d' % layer_num,
                                    (filt_length, 1, in_channels, nb_filters))
-            x = tf.nn.conv2d(x, filt, (1, 1, 1, 1), 'VALID')
+            x = tf.nn.conv2d(x, filt, (1, 1, 1, 1), 'SAME')
             pool_shape = (1, pool_length, 1, 1)
-            x = tf.nn.max_pool(x, pool_shape, pool_shape, 'VALID')
+            x = tf.nn.max_pool(x, pool_shape, pool_shape, 'SAME')
             return x
 
         with tf.variable_scope('encoder'):
-            x = tf.expand_dims(x, axis=2)
-            x = _add_conv(x, 1, 64, 5, 2)
-            x = _add_conv(x, 1, 64, 5, 2)
-            x = _add_conv(x, 1, 64, 5, 2)
-            x = tf.squeeze(x, axis=2)
+            # x = tf.expand_dims(x, axis=2)
+            # x = _add_conv(x, 1, 64, 5, 2)
+            # x = _add_conv(x, 1, 64, 5, 2)
+            # x = _add_conv(x, 1, 64, 5, 2)
+            # x = tf.squeeze(x, axis=2)
 
             cells = [tf.contrib.rnn.GRUCell(rnn_size) for _ in range(num_rnn)]
+            cells = [tf.contrib.rnn.DropoutWrapper(
+                cell, output_keep_prob=0.7) for cell in cells]
             cell = tf.contrib.rnn.MultiRNNCell(cells)
             cell = tf.contrib.rnn.OutputProjectionWrapper(cell,
                                                           self.num_classes)
@@ -189,8 +189,8 @@ class QuestionGenerator(object):
                                                       use_dynamic_rnn=True)
             attn_vec, enc_states = cell(tf.transpose(x, (1, 0, 2)),
                                         dtype=tf.float32,
-                                        sequence_length=self.input_len_pl)
-            attn_vec = attn_vec[-1]
+                                        sequence_length=self.input_len_pl / 8)
+            attn_vec = tf.reduce_max(attn_vec, axis=0)
 
         train_decoder_fn = tf.contrib.seq2seq.simple_decoder_fn_train(
             encoder_state=enc_states)
@@ -203,6 +203,8 @@ class QuestionGenerator(object):
 
         # Builds the RNN decoder training function.
         cells = [tf.contrib.rnn.GRUCell(rnn_size) for _ in range(num_rnn)]
+        cells = [tf.contrib.rnn.DropoutWrapper(
+            cell, output_keep_prob=0.7) for cell in cells]
         cells = [AttentionCellWrapper2D(cell, attn_vec) for cell in cells]
         cell = tf.contrib.rnn.MultiRNNCell(cells)
         cell = tf.contrib.rnn.OutputProjectionWrapper(cell, self.num_classes)
@@ -218,7 +220,7 @@ class QuestionGenerator(object):
 
         reg_loss = 0
         for w in tf.trainable_variables():
-            reg_loss += tf.nn.l2_loss(w) * 1e-3
+            reg_loss += tf.nn.l2_loss(w) * 1e-4
         tf.summary.scalar('loss/reg', reg_loss)
 
         seq_loss = tf.contrib.seq2seq.sequence_loss(
@@ -244,31 +246,16 @@ class QuestionGenerator(object):
             maximum_length=self.output_len,
             num_decoder_symbols=self.num_classes)
 
-        def noisy_infer_decoder_fn(*args, **kwargs):
-            """Adds noise to the decoder function."""
-
-            # Calls the regular decoder function.
-            outputs = infer_decoder_fn(*args, **kwargs)
-            done, cell_state, next_input, cell_output, context_state = outputs
-
-            # Adds noise to the cell output.
-            noise = tf.random_normal(tf.shape(cell_output),
-                                     mean=1,
-                                     stddev=infer_noise)
-            cell_output = noise * cell_output
-
-            return done, cell_state, next_input, cell_output, context_state
-
         # Reuse the RNN from earlier.
         tf.get_variable_scope().reuse_variables()
         self.inferred_question, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
             cell=cell,
-            decoder_fn=noisy_infer_decoder_fn)
+            decoder_fn=infer_decoder_fn)
 
         # Creates the log directory.
         if self.logdir is None:
             self.logdir = tempfile.mkdtemp()
-        sys.stdout.write('logdir: "%s"\n' % self.logdir)
+            sys.stdout.write('logdir: "%s"\n' % self.logdir)
         summary_writer = tf.summary.FileWriter(self.logdir, self._sess.graph)
         self.summary_writer = summary_writer
         self.summary_op = tf.summary.merge_all()
