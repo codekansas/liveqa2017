@@ -26,7 +26,7 @@ import numpy as np
 MAX_JOBS = 1000  # Maximum number of jobs on the queue.
 BATCH_SIZE = 100  # Maximum number of jobs to process at once.
 MAX_TF_WAIT = 100 / 1000  # Max wait time to fill a batch.
-MAX_PROC_WAIT = 1000 / 1000  # Max wait time for a question to be generated.
+MAX_PROC_WAIT = 5000 / 1000  # Max wait time for a question to be generated.
 NUM_TF_THREADS = 1  # Number of threads to spawn to handle questions.
 LOGDIR = 'model/'  # Where the model is stored.
 
