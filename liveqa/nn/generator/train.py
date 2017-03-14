@@ -1,7 +1,7 @@
 """Training code for the question generator model.
 
 To run:
-    python -m liveqa.nn.train
+    python -m liveqa.nn.generator.train
 """
 
 from __future__ import absolute_import
@@ -19,7 +19,7 @@ import tensorflow as tf
 # Defines command line flags.
 tf.app.flags.DEFINE_integer('batch_size', 100,
                             'size of each training minibatch.')
-tf.app.flags.DEFINE_integer('batches_per_epoch', 100,
+tf.app.flags.DEFINE_integer('batches_per_epoch', 32,
                             'number of minibatches per training epoch')
 tf.app.flags.DEFINE_integer('nb_epoch', 10000,  # Goes through all data.
                             'number of epochs to train the model for')
@@ -32,8 +32,6 @@ FLAGS = tf.app.flags.FLAGS
 
 
 def main(_):
-
-    # Constants.
     BATCH_SIZE = FLAGS.batch_size
     BATCHES_PER_EPOCH = FLAGS.batches_per_epoch
     NB_EPOCH = FLAGS.nb_epoch
@@ -41,7 +39,7 @@ def main(_):
     LOGDIR = FLAGS.logdir
 
     # Interactive session to avoid unpleasant parts.
-    sess = tf.InteractiveSession()
+    sess = tf.Session()
 
     model = QuestionGenerator(sess,
                               yahoo.ANSWER_MAXLEN,

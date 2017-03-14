@@ -113,7 +113,7 @@ def iterate_qa_pairs(convert_to_tokens=True):
         bestanswer = clean_text('' if bestanswer is None
                                 else bestanswer.text)
 
-        subject_len = len(subject) + 1
+        subject_len = min(len(subject) + 1, QUESTION_TITLE_MAXLEN)
 
         if convert_to_tokens:
             subject = tokenize(subject, pad_len=QUESTION_TITLE_MAXLEN)
