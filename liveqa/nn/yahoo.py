@@ -21,7 +21,7 @@ import numpy as np
 # Constants.
 QUESTION_TITLE_MAXLEN = 140
 QUESTION_BODY_MAXLEN = 500
-ANSWER_MAXLEN = 140
+ANSWER_MAXLEN = 250
 DATA_ENV_NAME = 'YAHOO_DATA'  # Directory containing the Yahoo data, unzipped.
 YAHOO_L6_URL = 'http://webscope.sandbox.yahoo.com/catalog.php?datatype=l'
 
