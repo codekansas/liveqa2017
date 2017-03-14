@@ -13,6 +13,8 @@ from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import random_ops
 from tensorflow.python.util import nest
 
+import six
+
 if __name__ == '__main__':
     raise RuntimeError('Cannot run this file directly.')
 
@@ -40,31 +42,59 @@ def check_built(f):
     return wrapper
 
 
+class ActivationWrapper(tf.contrib.rnn.RNNCell):
+    """Operator adding an activation to the output of an RNN."""
+
+    def __init__(self, cell, function, reuse=None):
+        if not isinstance(cell, tf.contrib.rnn.RNNCell):
+            raise TypeError('The parameter cell is not an RNNCell.')
+
+        if isinstance(function, six.string_types):
+            try:
+                function = getattr(tf, function)
+            except AttributeError:
+                try:
+                    function = getattr(tf.nn, function)
+                except AttributeError:
+                    raise ValueError('The desired function "%s" was '
+                                     'not found.' % function)
+
+        self._cell = cell
+        self._function = function
+
+    @property
+    def state_size(self):
+        return self._cell.state_size
+
+    @property
+    def output_size(self):
+        return self._cell.output_size
+
+    def __call__(self, inputs, state, scope=None):
+        output, res_state = self._cell(inputs, state)
+        return self._function(output), res_state
+
+
 class AttentionCellWrapper2D(tf.contrib.rnn.RNNCell):
     """Basic attention cell wrapper, using 2D attention input."""
 
     def __init__(self, cell, attn_vec):
-        """Create a cell with attention.
-
-        Args:
-            cell: a GRUCell, an attention is added to it.
-            attn_vec: a 2D Tensor with shape (batch_size, num_inputs),
-                the vector to pay attention to.
-        """
+        if not isinstance(cell, tf.contrib.rnn.RNNCell):
+            raise TypeError('The parameter cell is not an RNNCell.')
 
         self._cell = cell
         self._attn_vec = attn_vec
 
     def __call__(self, inputs, state, scope=None):
-        """LSTM with attention."""
+        """GRU with attention."""
 
         with tf.variable_scope(scope or 'attention_cell_wrapper'):
-            gru_output, new_state = self._cell(inputs, state)
-            output = _linear([gru_output, self._attn_vec],
+            output, _ = self._cell(inputs, state)
+            output = _linear([output, self._attn_vec],
                              self.output_size, bias=True)
             output = tf.tanh(output)
 
-        return output, new_state
+        return output, output
 
     @property
     def state_size(self):
@@ -191,12 +221,12 @@ def noisy_decoder_fn_inferrence(output_fn, encoder_state, embeddings,
                                               dtype=dtypes.float32)
             else:
                 cell_output = output_fn(cell_output)
-                cell_output = math_ops.log(nn_ops.softmax(cell_output))
-                cell_output = math_ops.exp(cell_output / temperature)
-                cell_output = cell_output / math_ops.reduce_sum(cell_output, 1)
-                cell_choice = random_ops.multinomial(cell_output, 1)
-                cell_choice = array_ops.reshape(cell_choice, (batch_size,))
-                next_input_id = math_ops.cast(cell_choice, dtype=dtype)
+                log_div = math_ops.log(nn_ops.softmax(cell_output))
+                exp_log_div = math_ops.exp(log_div / temperature)
+                renormalized = nn_ops.softmax(exp_log_div)
+                choices = random_ops.multinomial(renormalized, 1)
+                choices = array_ops.reshape(choices, (batch_size,))
+                next_input_id = math_ops.cast(choices, dtype=dtype)
                 done = math_ops.equal(next_input_id, end_of_sequence_id)
             next_input = array_ops.gather(embeddings, next_input_id)
             done = control_flow_ops.cond(math_ops.greater(time, maximum_length),
@@ -240,6 +270,7 @@ class QuestionGenerator(object):
         self._target_pl = tf.placeholder(tf.int32, output_shape)
         self._input_len_pl = tf.placeholder(tf.int32, (None,))
         self._target_len_pl = tf.placeholder(tf.int32, (None,))
+        self._temp_pl = tf.placeholder(tf.float32, ())
 
         self._built = False
         self._weights = []
@@ -327,14 +358,27 @@ class QuestionGenerator(object):
             cells = [tf.contrib.rnn.DropoutWrapper(
                 cell, output_keep_prob=0.7) for cell in cells]
             cell = tf.contrib.rnn.MultiRNNCell(cells)
-            cell = tf.contrib.rnn.OutputProjectionWrapper(cell,
-                                                          self.num_classes)
             cell = tf.contrib.rnn.FusedRNNCellAdaptor(cell,
                                                       use_dynamic_rnn=True)
-            attn_vec, enc_states = cell(tf.transpose(x, (1, 0, 2)),
-                                        dtype=tf.float32,
-                                        sequence_length=self.input_len_pl / 8)
-            attn_vec = tf.reduce_max(attn_vec, axis=0)
+
+            with tf.variable_scope('forward'):
+                attn_vec_fw, enc_states_fw = cell(
+                    tf.transpose(x, (1, 0, 2)),
+                    dtype=tf.float32,
+                    sequence_length=self.input_len_pl)
+                attn_vec_fw = tf.reduce_max(attn_vec_fw, axis=0)
+
+            with tf.variable_scope('backward'):
+                cell_bw = tf.contrib.rnn.TimeReversedFusedRNN(cell)
+                attn_vec_bw, enc_states_bw = cell_bw(
+                    tf.transpose(x, (1, 0, 2)),
+                    dtype=tf.float32,
+                    sequence_length=self.input_len_pl)
+                attn_vec_bw = tf.reduce_max(attn_vec_bw, axis=0)
+
+            attn_vec = tf.concat([attn_vec_fw, attn_vec_bw], axis=-1)
+            enc_states = tuple(tf.concat([f, b], axis=-1) for f, b in
+                               zip(enc_states_fw, enc_states_bw))
 
         train_decoder_fn = tf.contrib.seq2seq.simple_decoder_fn_train(
             encoder_state=enc_states)
@@ -346,12 +390,13 @@ class QuestionGenerator(object):
         seq_vals = tf.nn.embedding_lookup(emb, seq_vals)
 
         # Builds the RNN decoder training function.
-        cells = [tf.contrib.rnn.GRUCell(rnn_size) for _ in range(num_rnn)]
+        cells = [tf.contrib.rnn.GRUCell(rnn_size * 2) for _ in range(num_rnn)]
         cells = [tf.contrib.rnn.DropoutWrapper(
             cell, output_keep_prob=0.7) for cell in cells]
         cells = [AttentionCellWrapper2D(cell, attn_vec) for cell in cells]
         cell = tf.contrib.rnn.MultiRNNCell(cells)
         cell = tf.contrib.rnn.OutputProjectionWrapper(cell, self.num_classes)
+        # cell = ActivationWrapper(cell, 'softplus')
 
         x, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
             cell=cell,
@@ -366,11 +411,11 @@ class QuestionGenerator(object):
             reg_loss = 0
             for w in tf.trainable_variables():
                 reg_loss += tf.nn.l2_loss(w) * 1e-4
-            tf.summary.scalar('loss/reg', reg_loss)
 
         seq_loss = tf.contrib.seq2seq.sequence_loss(
             x, self.target_pl, weights)
         tf.summary.scalar('loss/seq', seq_loss)
+        tf.summary.scalar('loss/reg', reg_loss)
 
         self.loss = seq_loss + reg_loss
         tf.summary.scalar('loss/total', self.loss)
@@ -389,7 +434,7 @@ class QuestionGenerator(object):
             end_of_sequence_id=yahoo.END_IDX,
             maximum_length=self.output_len,
             num_decoder_symbols=self.num_classes,
-            temperature=1.)
+            temperature=self._temp_pl)
 
         # Reuse the RNN from earlier.
         tf.get_variable_scope().reuse_variables()
@@ -449,7 +494,7 @@ class QuestionGenerator(object):
         return loss
 
     @check_built
-    def sample(self, x, xlen):
+    def sample(self, x, xlen, temp):
         """Samples from the model.
 
         Args:
@@ -457,6 +502,7 @@ class QuestionGenerator(object):
                 representing the encoded answer.
             xlens: Numpy array with shape (batch_size), ints representing
                 the length of the answers.
+            temp: float, the temperature for sampling.
 
         Returns:
             y: Numpy array with shape (batch_size, output_len, num_classes),
@@ -466,6 +512,7 @@ class QuestionGenerator(object):
         feed_dict = {
             self.input_pl: x,
             self.input_len_pl: xlen,
+            self.temp_pl: temp,
         }
 
         y = self._sess.run(self.inferred_question, feed_dict=feed_dict)
@@ -513,6 +560,10 @@ class QuestionGenerator(object):
     @property
     def target_len_pl(self):
         return self._target_len_pl
+
+    @property
+    def temp_pl(self):
+        return self._temp_pl
 
     @property
     def num_classes(self):

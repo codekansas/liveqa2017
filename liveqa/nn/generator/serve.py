@@ -74,7 +74,7 @@ def create_app():
             answer_lens = np.asarray([a[1] for a in answers])
 
             # Runs the model to generate questions.
-            questions = model.sample(answers_arr, answer_lens)
+            questions = model.sample(answers_arr, answer_lens, 0.5)
 
             for e, a, q in zip(events, answers, questions):
                 a.append(q)

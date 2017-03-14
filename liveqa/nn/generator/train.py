@@ -73,7 +73,8 @@ def main(_):
 
         # Samples from the model.
         qsamples, asamples, _, alens = sample_iter.next()
-        qpred = model.sample(asamples, alens)
+        temps = [0.1, 0.2, 0.5, 1., 2.]
+        qpreds = [model.sample(asamples, alens, t) for t in temps]
 
         s = []
         s.append('epoch %d / %d, seen %d' %
@@ -82,7 +83,9 @@ def main(_):
         s.append('%d (%d) seconds' % (int(time_passed), total_time_passed))
         s.append('answer: "%s"' % yahoo.detokenize(asamples[0]))
         s.append('target: "%s"' % yahoo.detokenize(qsamples[0], argmax=False))
-        s.append('pred: "%s"' % yahoo.detokenize(qpred[0], argmax=True))
+        for temp, qpred in zip(temps, qpreds):
+            s.append('temp %.1f pred: "%s"'
+                     % (temp, yahoo.detokenize(qpred[0], argmax=True)))
         sys.stdout.write(' | '.join(s) + '\n')
 
 
