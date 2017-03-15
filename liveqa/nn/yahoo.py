@@ -15,12 +15,13 @@ import sys
 import re
 import xml.etree.cElementTree as ET
 
+import tensorflow as tf
 import numpy as np
 
 # Constants.
 QUESTION_TITLE_MAXLEN = 140
 QUESTION_BODY_MAXLEN = 500
-ANSWER_MAXLEN = 500
+ANSWER_MAXLEN = 250
 DATA_ENV_NAME = 'YAHOO_DATA'  # Directory containing the Yahoo data, unzipped.
 YAHOO_L6_URL = 'http://webscope.sandbox.yahoo.com/catalog.php?datatype=l'
 
@@ -41,22 +42,28 @@ if not os.path.exists(DATA_PATH):
                        'files, run:  cat FullOct2007.xml.part1 '
                        'FullOct2007.xml.part2 > FullOct2007.xml' % DATA_PATH)
 
-TEXT = ('abcdefghijklmnopqrstuvwxyz'
+# Extra tokens:
+# PADDING = 0
+OUT_OF_VOCAB = 0
+NUM_EXTRA = 1
+TEXT = ('@#abcdefghijklmnopqrstuvwxyz'
         'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         '1234567890'
-        '?.!@#$%^&*()/\\|\'"-_=+ ')
-TOKENS = dict((c, i + 2) for i, c in enumerate(TEXT))
-NUM_TOKENS = len(TOKENS) + 2
+        '?.!$%^&*()/\\|:\'"-_=+ ')
+START_TOKEN, END_TOKEN = TEXT[0], TEXT[1]
+START_IDX, END_IDX = NUM_EXTRA, NUM_EXTRA + 1
+TOKENS = dict((c, i + NUM_EXTRA) for i, c in enumerate(TEXT))
+NUM_TOKENS = len(TOKENS) + NUM_EXTRA
 
 
 def tokenize(text, pad_len=None):
     """Converts text to tokens."""
 
-    idxs = [TOKENS.get(c, 1) for c in text]
+    idxs = [TOKENS.get(c, OUT_OF_VOCAB) for c in text]
 
     if pad_len is not None:
         idxs = idxs[:pad_len]
-        idxs += [0] * (pad_len - len(idxs))
+        idxs += [END_IDX] * (pad_len - len(idxs))
 
     return idxs
 
@@ -67,14 +74,19 @@ def detokenize(tokens, argmax=False):
     if argmax:
         tokens = np.argmax(tokens, axis=-1)
 
-    return ''.join(['' if t < 2 else TEXT[t-2] for t in tokens])
+    # Remove end indices.
+    tokens = [t for t in tokens if t != END_IDX]
+
+    return ''.join(['' if t < NUM_EXTRA else TEXT[t-NUM_EXTRA]
+                    for t in tokens])
 
 
 def clean_text(text):
     """Cleans text of HTML, double spaces, etc."""
 
     text = re.sub('(\<.+?\>|\n|  +)+', ' ', text)
-
+    text = re.sub(START_TOKEN + '|' + END_TOKEN, '', text)
+    # text = START_TOKEN + text + END_TOKEN
     return text
 
 
@@ -87,7 +99,8 @@ def iterate_qa_pairs(convert_to_tokens=True):
     Yields:
         subject: the question title (max length = QUESTION_TITLE_MAXLEN)
         content: the question body (max length = QUESTION_BODY_MAXLEN)
-        bestanswer: the body of the best answer (max length = ANSWER_MAXLEN)
+        bestanswer: the body of the best answer
+            (max length = ANSWER_MAXLEN)
     """
 
     def _parse_document(elem):
@@ -97,46 +110,26 @@ def iterate_qa_pairs(convert_to_tokens=True):
 
         subject = clean_text('' if subject is None else subject.text)
         content = clean_text('' if content is None else content.text)
-        bestanswer = clean_text('' if bestanswer is None else bestanswer.text)
+        bestanswer = clean_text('' if bestanswer is None
+                                else bestanswer.text)
+
+        subject_len = min(len(subject) + 1, QUESTION_TITLE_MAXLEN)
+        content_len = min(len(content) + 1, QUESTION_BODY_MAXLEN)
+        bestanswer_len = min(len(bestanswer) + 1, ANSWER_MAXLEN)
 
         if convert_to_tokens:
             subject = tokenize(subject, pad_len=QUESTION_TITLE_MAXLEN)
             content = tokenize(content, pad_len=QUESTION_BODY_MAXLEN)
             bestanswer = tokenize(bestanswer, pad_len=ANSWER_MAXLEN)
 
-        return subject, content, bestanswer
+        return (subject, content, bestanswer,
+                subject_len, content_len, bestanswer_len)
 
     with open(DATA_PATH, 'r') as f:
         parser = ET.iterparse(f)
         for event, elem in parser:
             if elem.tag == 'document':
                 yield _parse_document(elem)
-
-
-def iterate_qa_data(batch_size):
-    """Iterates through question-answer data as Numpy arrays.
-
-    Args:
-        batch_size: int, the number of samples per batch.
-
-    Yields:
-        subject: numpy array with shape (batch_size, QUESTION_TITLE_MAXLEN)
-        content: numpy array with shape (batch_size, QUESTION_BODY_MAXLEN)
-        bestanswer: numpy array with shape (batch_size, ANSWER_MAXLEN)
-    """
-
-    iterable = itertools.cycle(iterate_qa_pairs())
-
-    qtitles, qbodies, abodies = [], [], []
-
-    for i, (qtitle, qbody, abody) in enumerate(iterable, 1):
-        qtitles.append(qtitle)
-        qbodies.append(qbody)
-        abodies.append(abody)
-
-        if i % batch_size == 0:
-            yield np.asarray(qtitles), np.asarray(qbodies), np.asarray(abodies)
-            qtitles, qbodies, abodies = [], [], []
 
 
 def iterate_answer_to_question(batch_size):
@@ -146,18 +139,25 @@ def iterate_answer_to_question(batch_size):
         batch_size: int, the number of samples per batch.
 
     Yields:
-        bestanswer: numpy array with shape (batch_size, ANSWER_MAXLEN)
-        subject: numpy array with shape (batch_size, QUESTION_TITLE_MAXLEN)
+        bestanswer: numpy array with shape
+            (batch_size, ANSWER_MAXLEN)
+        subject: numpy array with shape
+            (batch_size, QUESTION_TITLE_MAXLEN)
     """
 
     iterable = itertools.cycle(iterate_qa_pairs())
 
-    qtitles, abodies = [], []
+    qtitles, abodies, qlens, alens = [], [], [], []
 
-    for i, (qtitle, _, abody) in enumerate(iterable, 1):
+    for i, (qtitle, _, abody, qlen, _, alen) in enumerate(iterable, 1):
         qtitles.append(qtitle)
         abodies.append(abody)
+        alens.append(alen)
+        qlens.append(qlen)
 
         if i % batch_size == 0:
-            yield np.asarray(abodies), np.expand_dims(np.asarray(qtitles), -1)
-            qtitles, abodies = [], []
+            yield (np.asarray(qtitles),
+                   np.asarray(abodies),
+                   np.asarray(qlens),
+                   np.asarray(alens))
+            qtitles, abodies, qlens, alens = [], [], [], []
