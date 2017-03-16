@@ -1,6 +1,9 @@
 import logging
 import xml.sax
 
+import sys
+
+from liveqa.rank.ShallowRank import ShallowRank
 from liveqa.vertical.Indexing import Indexing
 
 
@@ -11,6 +14,7 @@ class XmlParsehandler(xml.sax.ContentHandler):
         self.content = ""
         self.bestAnswer = ""
         self.indexing = Indexing()
+        self.i = 0
 
     def startElement(self, tag, attrs):
         self.tag = tag
@@ -19,11 +23,17 @@ class XmlParsehandler(xml.sax.ContentHandler):
     def endElement(self, tag):
         if tag == "document":
             print("Indexing doc...")
-            self.indexing.indexing(self.subject,self.content,self.bestAnswer)
-            self.tag = ""
-            self.subject = u""
-            self.content = u""
-            self.bestAnswer = u""
+
+            if self.i<10000000:
+                self.indexing.indexing(self.subject,self.content,self.bestAnswer)
+                self.tag = ""
+                self.subject = u""
+                self.content = u""
+                self.bestAnswer = u""
+                self.i = self.i + 1
+            else:
+                Handler.indexing.closeWriter()
+                Handler.indexing.closeIndexing()
 
 
     def characters(self, content):
@@ -44,8 +54,19 @@ if (__name__ == "__main__"):
     Handler = XmlParsehandler()
     parser.setContentHandler(Handler)
 
-    parser.parse("../data/FullOct2007.xml")
 
-    # parse the query
-    Handler.indexing.searcher("Why are yawns contagious")
-    Handler.indexing.closeWriter()
+    if Handler.indexing.isWriteModeOn:
+        parser.parse("../data/FullOct2007.xml")
+        Handler.indexing.closeWriter()
+        Handler.indexing.closeIndexing()
+    else:
+        # parse the query
+        while(1):
+            query = raw_input("Enter your question:\n")
+            # for line in sys.stdin.readline():
+            # print test
+            # Handler.indexing.searcher("do you know why are yawns contagious")
+            candidates = Handler.indexing.searcher(query)
+            Handler.indexing.closeIndexing()
+            # print ShallowRank.getCandidates(1,query, candidates)
+            print ShallowRank(1,query, candidates).shallowRank()
