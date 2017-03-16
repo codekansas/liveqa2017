@@ -2,6 +2,9 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 from gensim import models, corpora, similarities
+from liveqa import yahoo
+
+import logging
 
 import os
 import re
@@ -9,21 +12,26 @@ import pickle
 
 BASE = os.path.dirname(os.path.realpath(__file__))
 STOPWORDS_FILE = os.path.join(BASE, 'stopwords.txt')
-DICTIONARY_FILE = os.path.join(BASE, 'dictionary.p')
+DICTIONARY_FILE = os.path.join(BASE, 'dictionary.pkl')
 MODEL_FILE = os.path.join(BASE, 'model.gensim')
+NUM_TOPICS = 100
 
 
 class ShallowRank(object):
     """Shallow ranking of documents using LSI."""
 
     def __init__(self,
-                 num_topics=100,
+                 num_topics=NUM_TOPICS,
                  dictionary_file=DICTIONARY_FILE,
                  model_file=MODEL_FILE):
         """Initializes the ranker.
 
         Args:
-            num_topics: int, number of LSI topics.
+            num_topics: int (default: NUM_TOPICS), number of LSI topics to use.
+            dictionary_file: str, where to save / load the dictionary file
+                (defaults to DICTIONARY_FILE).
+            model_file: str, where to save / load the model (defaults to
+                MODEL_FILE).
         """
 
         self.dictionary = None
@@ -43,7 +51,7 @@ class ShallowRank(object):
 
         # Loads an existing model file, if one exists.
         if os.path.exists(self.model_file):
-            self.model = models.LsiModel.load(self.model_file)
+            self.model = models.LdaModel.load(self.model_file)
 
     def tokenize(self, document):
         """Tokenizes a document.
@@ -63,7 +71,7 @@ class ShallowRank(object):
 
         return tokens
 
-    def train(self, corpus):
+    def train(self, corpus, passes=1):
         """Updates dictionary and model given a corpus.
 
         Args:
@@ -92,7 +100,8 @@ class ShallowRank(object):
         corpus_bow = [self.dictionary.doc2bow(doc) for doc in documents]
 
         # Trains the LSI model.
-        self.model = models.LsiModel(corpus_bow,
+        self.model = models.LdaModel(corpus_bow,
+                                     passes=passes,
                                      id2word=self.dictionary,
                                      num_topics=self.num_topics)
 
@@ -119,11 +128,11 @@ class ShallowRank(object):
         candidates_bow = [self.dictionary.doc2bow(doc) for doc in documents]
 
         # Creates bag-of-words from each document.
-        vec_lsi = self.model[query_vec]
+        vec_emb = self.model[query_vec]
         index = similarities.MatrixSimilarity(self.model[candidates_bow])
 
         # Sorts documents by similarity to query.
-        sims = index[vec_lsi]
+        sims = index[vec_emb]
         sims = sorted(enumerate(sims), key=lambda item: -item[1])
 
         selected = [sim[0] for sim in sims]
@@ -136,21 +145,25 @@ class ShallowRank(object):
         return results
 
 
-if __name__ == '__main__':  # Does some simple unit tests.
-    ranker = ShallowRank(dictionary_file='/tmp/dictionary.p',
+if __name__ == '__main__':  # Builds the index from the full corpus.
+    import itertools
+
+    # Turn on logging.
+    logging.basicConfig(level=logging.DEBUG)
+
+    ranker = ShallowRank(dictionary_file='/tmp/dictionary.pkl',
                          model_file='/tmp/model.gensim')
-    print('%d stopwords' % len(ranker.stoplist))
 
-    # Tests training on the corpus.
-    corpus = [
-        'this is a possible answer',
-        'this is another one! i wonder how it will be ranked',
-        'are mermaids real?',
-    ]
-    ranker.train(corpus=corpus)
+    NUM_ANSWERS = 1000000  # How many answers to use to train LDA model.
 
-    # Tests retrieving an answer.
-    candidates = corpus
-    query = 'what are mermaids?'
-    best_answers = ranker.get_candidates(query, candidates)
-    assert best_answers[0] == candidates[-1]
+    iterable = yahoo.iterate_qa_pairs(convert_to_tokens=False)
+    iterable = itertools.islice(iterable, NUM_ANSWERS)
+    answers = []
+
+    for i, (_, _, answer, _, _, _) in enumerate(iterable):
+        answers.append(answer)
+        if i % 1000 == 0:
+            logging.info('generated %d' % i)
+
+    # Trains the ranker on the document corpus (takes a while).
+    ranker.train(answers)

@@ -15,7 +15,6 @@ import sys
 import re
 import xml.etree.cElementTree as ET
 
-import tensorflow as tf
 import numpy as np
 
 # Constants.
@@ -26,16 +25,8 @@ DATA_ENV_NAME = 'YAHOO_DATA'  # Directory containing the Yahoo data, unzipped.
 YAHOO_L6_URL = 'http://webscope.sandbox.yahoo.com/catalog.php?datatype=l'
 
 # Variables that will be filled in later.
-DATA_PATH = None  # Path to the XML file with the data.
-
-
-if DATA_ENV_NAME not in os.environ:
-    raise RuntimeError('The environment variable "%s" was not found. You '
-                       'should set it to point at the directory with the '
-                       'files downloaded from [%s].'
-                       % (DATA_ENV_NAME, YAHOO_L6_URL))
-
-DATA_PATH = os.path.join(os.environ[DATA_ENV_NAME], 'FullOct2007.xml')
+BASE = os.path.dirname(os.path.realpath(__file__))
+DATA_PATH = os.path.join(BASE, 'data', 'FullOct2007.xml')
 
 if not os.path.exists(DATA_PATH):
     raise RuntimeError('File not found: "%s". To create it from the existing '
