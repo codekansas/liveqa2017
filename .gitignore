@@ -6,7 +6,7 @@ credentials.*
 data/
 *.h5
 model/
-model.*
+*.gensim
 dictionary.*
 index/
 
