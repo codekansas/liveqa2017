@@ -1,7 +1,7 @@
 """Training code for the question generator model.
 
 To run:
-    python -m liveqa.nn.generator.train
+    python -m liveqa.nn.train
 """
 
 from __future__ import absolute_import

@@ -1,7 +1,7 @@
 """Serving code for the question generator model.
 
 To run a local server:
-    python -m liveqa.nn.generator.serve
+    python -m liveqa.nn.serve
 """
 
 from __future__ import division
