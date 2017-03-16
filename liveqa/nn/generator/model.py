@@ -426,15 +426,24 @@ class QuestionGenerator(object):
         capped = [(tf.clip_by_value(grad, -1., 1.), var) for grad, var in gvs]
         self.train_op = optimizer.apply_gradients(capped)
 
-        infer_decoder_fn = noisy_decoder_fn_inferrence(
+        # infer_decoder_fn = noisy_decoder_fn_inferrence(
+        #     output_fn=None,
+        #     encoder_state=enc_states,
+        #     embeddings=emb,
+        #     start_of_sequence_id=yahoo.START_IDX,
+        #     end_of_sequence_id=yahoo.END_IDX,
+        #     maximum_length=self.output_len,
+        #     num_decoder_symbols=self.num_classes,
+        #     temperature=self._temp_pl)
+
+        infer_decoder_fn = tf.contrib.seq2seq.simple_decoder_fn_inference(
             output_fn=None,
             encoder_state=enc_states,
             embeddings=emb,
             start_of_sequence_id=yahoo.START_IDX,
             end_of_sequence_id=yahoo.END_IDX,
             maximum_length=self.output_len,
-            num_decoder_symbols=self.num_classes,
-            temperature=self._temp_pl)
+            num_decoder_symbols=self.num_classes)
 
         # Reuse the RNN from earlier.
         tf.get_variable_scope().reuse_variables()
