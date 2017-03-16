@@ -1,3 +1,5 @@
+from __future__ import absolute_import
+
 import logging
 import xml.sax
 
@@ -20,6 +22,7 @@ class XmlParsehandler(xml.sax.ContentHandler):
         self.tag = tag
         # if tag == "vespaadd":
         #     print ""
+
     def endElement(self, tag):
         if tag == "document":
             print("Indexing doc...")
@@ -35,7 +38,6 @@ class XmlParsehandler(xml.sax.ContentHandler):
                 Handler.indexing.closeWriter()
                 Handler.indexing.closeIndexing()
 
-
     def characters(self, content):
         if self.tag == "subject":
             self.subject += content
@@ -47,13 +49,13 @@ class XmlParsehandler(xml.sax.ContentHandler):
 if (__name__ == "__main__"):
     # create an XMLReader
     parser = xml.sax.make_parser()
+
     # turn off namepsaces
     parser.setFeature(xml.sax.handler.feature_namespaces, 0)
 
     # override the default ContextHandler
     Handler = XmlParsehandler()
     parser.setContentHandler(Handler)
-
 
     if Handler.indexing.isWriteModeOn:
         parser.parse("../data/FullOct2007.xml")
@@ -69,4 +71,4 @@ if (__name__ == "__main__"):
             candidates = Handler.indexing.searcher(query)
             Handler.indexing.closeIndexing()
             # print ShallowRank.getCandidates(1,query, candidates)
-            print ShallowRank(1,query, candidates).shallowRank()
+            print ShallowRank(1, query, candidates).shallowRank()

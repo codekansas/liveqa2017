@@ -6,6 +6,8 @@ credentials.*
 data/
 *.h5
 model/
+model.*
+dictionary.*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
