@@ -1,8 +1,9 @@
-"""model with the right shapes
+"""
 Code for reading from Yahoo L6 data.
 
-The raw data is in XML format. These utils iterate through this
-data and returns question-answer pairs.
+The raw data is in XML format. These utils iterate through this data and
+return question-answer pairs. This provides a way to standardize access to the
+corpus.
 """
 
 from __future__ import absolute_import

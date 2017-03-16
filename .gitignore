@@ -10,6 +10,9 @@ model.*
 dictionary.*
 index/
 
+# Other packages.
+seq2seq/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
