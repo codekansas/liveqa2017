@@ -32,7 +32,7 @@ logging.info('By importing the API submodule, you are creating background '
 
 # Defines constants.
 MAX_JOBS = 10  # Maximum number of jobs that can be on the queue at once.
-SHALLOW_LIMIT = 100  # Max number of candidates to pass to shallow ranker.
+SHALLOW_LIMIT = 10  # Max number of candidates to pass to shallow ranker.
 MAX_WAIT_TIME = 20  # Maximum number of seconds to wait for a query.
 NUM_THREADS = 1  # Number of background threads to run at once.
 
@@ -109,10 +109,10 @@ def process_thread():
             candidates = _handler.indexing.get_top_n_questions(
                 query_job.query, limit=SHALLOW_LIMIT)
             _handler.indexing.closeIndexing()
-            # question = _ranker.get_candidates(
-            #     query_job.query, candidates, nc=1)[0]
-            question = random.choice(candidates)
-            if questions:
+            if candidates:
+                # question = _ranker.get_candidates(
+                #     query_job.query, candidates, nc=1)[0]
+                question = random.choice(candidates)
                 query_job.set_response(question)
             else:
                 query_job.set_response('No questions found.')
@@ -122,9 +122,9 @@ def process_thread():
             candidates = _handler.indexing.get_top_n_answers(
                 query_job.query, limit=SHALLOW_LIMIT)
             _handler.indexing.closeIndexing()
-            answers = _ranker.get_candidates(
-                query_job.query, candidates, nc=1)
-            if answers:
+            if candidates:
+                answers = _ranker.get_candidates(
+                    query_job.query, candidates, nc=1)
                 query_job.set_response(answers[0])
             else:
                 query_job.set_response('No answers found.')

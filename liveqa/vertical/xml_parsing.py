@@ -104,11 +104,11 @@ if (__name__ == '__main__'):
         while query:
 
             # Gets candidate answers.
-            candidates = handler.indexing.get_top_n_answers(query, limit=100)
+            candidates = handler.indexing.get_top_n_answers(query, limit=10)
             answers = ranker.get_candidates(query, candidates, nc=10)
 
             # Gets candidate questions.
-            candidates = handler.indexing.get_top_n_questions(query, limit=100)
+            candidates = handler.indexing.get_top_n_questions(query, limit=10)
             questions = ranker.get_candidates(query, candidates, nc=10)
 
             print('Top %d Answers, sorted by relevance:' % len(answers))

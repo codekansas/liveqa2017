@@ -96,7 +96,7 @@ class Indexing(object):
 
         return text
 
-    def get_top_n_questions(self, query, limit=100):
+    def get_top_n_questions(self, query, limit=10):
         """Returns the top questions related to a given query.
 
         Args:
