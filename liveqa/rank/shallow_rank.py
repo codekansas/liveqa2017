@@ -195,11 +195,11 @@ if __name__ == '__main__':  # Builds the index from the full corpus.
     else:
         ranker = ShallowRank()
 
-    iterable = yahoo.iterate_qa_pairs(convert_to_tokens=False)
+    iterable = yahoo.iterate_qa_pairs()
     iterable = itertools.islice(iterable, NUM_ANSWERS)
     answers = []
 
-    for i, (_, _, answer, _, _, _) in enumerate(iterable):
+    for i, (_, answer) in enumerate(iterable):
         answers.append(answer)
         if i % 1000 == 0:
             logging.info('generated %d' % i)

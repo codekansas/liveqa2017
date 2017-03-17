@@ -9,113 +9,161 @@ corpus.
 from __future__ import absolute_import
 from __future__ import print_function
 
+from gensim import models, corpora, similarities
+
 import cPickle as pkl
 import itertools
 import os
+import six
 import sys
 import re
 import xml.etree.cElementTree as ET
 
+from collections import Counter
+
 import numpy as np
+import logging
 
 # Constants.
-QUESTION_TITLE_MAXLEN = 140
-QUESTION_BODY_MAXLEN = 500
-ANSWER_MAXLEN = 250
+QUESTION_MAXLEN = 50
+ANSWER_MAXLEN = 100
+DICT_SIZE = 30000  # Maximum number of words to include in the corpus.
 DATA_ENV_NAME = 'YAHOO_DATA'  # Directory containing the Yahoo data, unzipped.
 YAHOO_L6_URL = 'http://webscope.sandbox.yahoo.com/catalog.php?datatype=l'
 
 # Variables that will be filled in later.
 BASE = os.path.dirname(os.path.realpath(__file__))
 DATA_PATH = os.path.join(BASE, 'data', 'FullOct2007.xml')
+DICTIONARY_FILE = os.path.join(BASE, 'data', 'dictionary_dict.pkl')
 
 if not os.path.exists(DATA_PATH):
     raise RuntimeError('File not found: "%s". To create it from the existing '
                        'files, run:  cat FullOct2007.xml.part1 '
                        'FullOct2007.xml.part2 > FullOct2007.xml' % DATA_PATH)
 
+
+def word_tokenize(text):
+    """Tokenizes text (as a string) to a list of tokens."""
+
+    if text is None:
+        text = ''
+    elif not isinstance(text, six.string_types):
+        text = '' if text is None else text.text
+
+    text = re.sub('\<.+?\>', '', text)
+    text = re.findall('[\w\d\']+|[?\.!-\*]+', text.lower())
+
+    return text
+
+
+if not os.path.exists(DICTIONARY_FILE):  # Creates the dictionary.
+    counter = Counter()
+    with open(DATA_PATH, 'r') as f:
+        parser = ET.iterparse(f)
+        num_docs = 0
+        for event, elem in parser:
+            if elem.tag == 'document':
+                num_docs += 1
+                counter.update(word_tokenize(elem.find('subject')))
+                counter.update(word_tokenize(elem.find('bestanswer')))
+
+            if num_docs % 1000 == 0:
+                sys.stdout.write('\rparsed %d docs, %d words'
+                                 % (num_docs, len(counter)))
+                sys.stdout.flush()
+
+            if num_docs == 100000:
+                break
+
+    _DICTIONARY = [w for w, _ in counter.most_common(DICT_SIZE)]
+    with open(DICTIONARY_FILE, 'wb') as f:
+        pkl.dump(_DICTIONARY, f)
+else:
+    with open(DICTIONARY_FILE, 'rb') as f:
+        _DICTIONARY = pkl.load(f)
+
 # Extra tokens:
 # PADDING = 0
 OUT_OF_VOCAB = 0
-NUM_EXTRA = 1
-TEXT = ('@#abcdefghijklmnopqrstuvwxyz'
-        'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-        '1234567890'
-        '?.!$%^&*()/\\|:\'"-_=+ ')
-START_TOKEN, END_TOKEN = TEXT[0], TEXT[1]
-START_IDX, END_IDX = NUM_EXTRA, NUM_EXTRA + 1
-TOKENS = dict((c, i + NUM_EXTRA) for i, c in enumerate(TEXT))
-NUM_TOKENS = len(TOKENS) + NUM_EXTRA
+START_IDX = 1
+END_IDX = 2
+NUM_SPECIAL = 3 + ANSWER_MAXLEN  # OUT_OF_VOCAB, START_IDX, END_IDX
+
+_CHAR_TO_IDX = dict((c, i + NUM_SPECIAL) for i, c in enumerate(_DICTIONARY))
+NUM_TOKENS = NUM_SPECIAL + len(_DICTIONARY)
 
 
-def tokenize(text, pad_len=None):
+def tokenize(question, answer, use_pad=False, include_rev=False):
     """Converts text to tokens."""
 
-    idxs = [TOKENS.get(c, OUT_OF_VOCAB) for c in text]
+    tok_questions = word_tokenize(question)
+    tok_answers = word_tokenize(answer)
 
-    if pad_len is not None:
-        idxs = idxs[:pad_len]
-        idxs += [END_IDX] * (pad_len - len(idxs))
+    question_len = min(len(tok_questions), QUESTION_MAXLEN)
+    answer_len = min(len(tok_answers), ANSWER_MAXLEN)
 
-    return idxs
+    idxs = dict((c, i + 3) for i, c in enumerate(tok_answers))
+
+    def _encode(w):
+        if w in idxs:
+            return idxs[w]
+        if w in _CHAR_TO_IDX:
+            return _CHAR_TO_IDX[w]
+        return OUT_OF_VOCAB
+
+    if include_rev:
+        rev_dict = dict((i + 3, c) for i, c in enumerate(tok_answers))
+
+    tok_questions = [_encode(w) for w in tok_questions]
+    tok_answers = [_encode(w) for w in tok_answers]
+
+    if use_pad is not None:
+        tok_questions = tok_questions[:QUESTION_MAXLEN]
+        tok_questions += [END_IDX] * (QUESTION_MAXLEN - len(tok_questions))
+        tok_answers = tok_answers[:ANSWER_MAXLEN]
+        tok_answers += [END_IDX] * (ANSWER_MAXLEN - len(tok_answers))
+
+    if include_rev:
+        return tok_questions, tok_answers, question_len, answer_len, rev_dict
+    else:
+        return tok_questions, tok_answers, question_len, answer_len
 
 
-def detokenize(tokens, argmax=False):
-    """Converts tokens to text."""
+def detokenize(tokens, rev_dict, argmax=False, show_missing=False):
+    """Converts question back to tokens."""
 
     if argmax:
         tokens = np.argmax(tokens, axis=-1)
 
-    # Remove end indices.
-    tokens = [t for t in tokens if t != END_IDX]
+    def _decode(i):
+        if i < 3:
+            return 'X' if show_missing else ''
+        elif i < NUM_SPECIAL:
+            return rev_dict[i]
+        else:
+            return _DICTIONARY[i - NUM_SPECIAL]
 
-    return ''.join(['' if t < NUM_EXTRA else TEXT[t-NUM_EXTRA]
-                    for t in tokens])
+    words = [_decode(w) for w in tokens]
+    sentence = ' '.join(w for w in words if w)
 
-
-def clean_text(text):
-    """Cleans text of HTML, double spaces, etc."""
-
-    text = re.sub('(\<.+?\>|\n|  +)+', ' ', text)
-    text = re.sub(START_TOKEN + '|' + END_TOKEN, '', text)
-    # text = START_TOKEN + text + END_TOKEN
-    return text
+    return sentence
 
 
-def iterate_qa_pairs(convert_to_tokens=True):
+def iterate_qa_pairs():
     """Iterates through question-answer pairs in a single file.
-
-    Args:
-        convert_to_tokens: bool, if set, convert characters to tokens.
 
     Yields:
         subject: the question title (max length = QUESTION_TITLE_MAXLEN)
-        content: the question body (max length = QUESTION_BODY_MAXLEN)
         bestanswer: the body of the best answer
             (max length = ANSWER_MAXLEN)
     """
 
     def _parse_document(elem):
         subject = elem.find('subject')
-        content = elem.find('content')
         bestanswer = elem.find('bestanswer')
 
-        subject = clean_text('' if subject is None else subject.text)
-        content = clean_text('' if content is None else content.text)
-        bestanswer = clean_text('' if bestanswer is None
-                                else bestanswer.text)
-
-        subject_len = min(len(subject) + 1, QUESTION_TITLE_MAXLEN)
-        content_len = min(len(content) + 1, QUESTION_BODY_MAXLEN)
-        bestanswer_len = min(len(bestanswer) + 1, ANSWER_MAXLEN)
-
-        if convert_to_tokens:
-            subject = tokenize(subject, pad_len=QUESTION_TITLE_MAXLEN)
-            content = tokenize(content, pad_len=QUESTION_BODY_MAXLEN)
-            bestanswer = tokenize(bestanswer, pad_len=ANSWER_MAXLEN)
-
-        return (subject, content, bestanswer,
-                subject_len, content_len, bestanswer_len)
+        return ('' if subject is None else subject.text,
+                '' if bestanswer is None else bestanswer.text)
 
     with open(DATA_PATH, 'r') as f:
         parser = ET.iterparse(f)
@@ -124,32 +172,47 @@ def iterate_qa_pairs(convert_to_tokens=True):
                 yield _parse_document(elem)
 
 
-def iterate_answer_to_question(batch_size):
-    """Iterator for producing answer -> question data.
+def iterate_answer_to_question(batch_size, include_ref):
+    """Yields Numpy arrays, representing the data."""
 
-    Args:
-        batch_size: int, the number of samples per batch.
+    q_toks, a_toks, q_lens, a_lens, refs = [], [], [], [], []
 
-    Yields:
-        bestanswer: numpy array with shape
-            (batch_size, ANSWER_MAXLEN)
-        subject: numpy array with shape
-            (batch_size, QUESTION_TITLE_MAXLEN)
-    """
+    for i, (question, answer) in enumerate(iterate_qa_pairs(), 1):
+        args = tokenize(
+            question=question, answer=answer,
+            use_pad=True, include_rev=include_ref)
 
-    iterable = itertools.cycle(iterate_qa_pairs())
+        q_toks.append(args[0])
+        a_toks.append(args[1])
+        q_lens.append(args[2])
+        a_lens.append(args[3])
 
-    qtitles, abodies, qlens, alens = [], [], [], []
-
-    for i, (qtitle, _, abody, qlen, _, alen) in enumerate(iterable, 1):
-        qtitles.append(qtitle)
-        abodies.append(abody)
-        alens.append(alen)
-        qlens.append(qlen)
+        if include_ref:
+            refs.append(args[4])
 
         if i % batch_size == 0:
-            yield (np.asarray(qtitles),
-                   np.asarray(abodies),
-                   np.asarray(qlens),
-                   np.asarray(alens))
-            qtitles, abodies, qlens, alens = [], [], [], []
+            r = [np.asarray(q_toks), np.asarray(a_toks),
+                 np.asarray(q_lens), np.asarray(a_lens)]
+
+            if include_ref:
+                r.append(refs)
+
+            yield r
+
+            q_toks, a_toks, q_lens, a_lens, refs = [], [], [], [], []
+
+
+if __name__ == '__main__':
+    import itertools
+
+    iterable = iterate_qa_pairs()
+    for q, a in itertools.islice(iterable, 3):
+        print('[iterate_qa_pairs]', 'q:', q, 'a:', a)
+
+    args = iterate_answer_to_question(3, True).next()
+    q, a, qlen, alen, ref = args
+
+    for i in range(3):
+        q_d = detokenize(q[i], ref[i], show_missing=True)
+        a_d = detokenize(a[i], ref[i], show_missing=True)
+        print('[iterate_answer_to_question]', 'q:', q_d, 'a:', a_d)

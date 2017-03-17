@@ -46,7 +46,7 @@ def create_app():
         sess = tf.Session()
         model = QuestionGenerator(sess,
                                   yahoo.ANSWER_MAXLEN,
-                                  yahoo.QUESTION_TITLE_MAXLEN,
+                                  yahoo.QUESTION_MAXLEN,
                                   yahoo.NUM_TOKENS,
                                   logdir=LOGDIR,
                                   only_cpu=True)

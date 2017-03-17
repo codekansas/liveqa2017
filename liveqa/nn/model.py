@@ -142,7 +142,6 @@ class QuestionGenerator(object):
         self._target_pl = tf.placeholder(tf.int32, output_shape)
         self._input_len_pl = tf.placeholder(tf.int32, (None,))
         self._target_len_pl = tf.placeholder(tf.int32, (None,))
-        self._temp_pl = tf.placeholder(tf.float32, ())
 
         self._built = False
         self._weights = []
@@ -194,7 +193,7 @@ class QuestionGenerator(object):
 
         return weight
 
-    def build(self, num_rnn=2, rnn_size=256):
+    def build(self, num_rnn=2, rnn_size=128):
         """Builds the model, initializing weights.
 
         TODO: Docstring.
@@ -206,18 +205,9 @@ class QuestionGenerator(object):
         x = self.input_pl  # Represents the output after each layer.
 
         # Converts input to one-hot encoding.
-        emb = self.get_weight('emb', (self.num_classes, self.num_classes),
-                              init='eye')
+        emb = self.get_weight('emb', (self.num_classes, 200),
+                              init='glorot')
         x = tf.nn.embedding_lookup(emb, x)
-
-        def _add_conv(x, layer_num, nb_filters, filt_length, pool_length):
-            in_channels = x.get_shape()[3].value
-            filt = self.get_weight('filter_%d' % layer_num,
-                                   (filt_length, 1, in_channels, nb_filters))
-            x = tf.nn.conv2d(x, filt, (1, 1, 1, 1), 'SAME')
-            pool_shape = (1, pool_length, 1, 1)
-            x = tf.nn.max_pool(x, pool_shape, pool_shape, 'SAME')
-            return x
 
         with tf.variable_scope('encoder'):
             cell = tf.contrib.rnn.GRUCell(rnn_size)
@@ -265,6 +255,8 @@ class QuestionGenerator(object):
             decoder_fn=train_decoder_fn,
             inputs=seq_vals,
             sequence_length=self.target_len_pl)
+
+        print('rnn size:', rnn_size, 'num_classes:', self.num_classes)
 
         output_W = self.get_weight('out_W', (rnn_size * 2, self.num_classes))
         output_b = self.get_weight('out_b', (self.num_classes,), init='zero')
@@ -371,7 +363,7 @@ class QuestionGenerator(object):
         return loss
 
     @check_built
-    def sample(self, x, xlen, temp):
+    def sample(self, x, xlen):
         """Samples from the model.
 
         Args:
@@ -379,7 +371,6 @@ class QuestionGenerator(object):
                 representing the encoded answer.
             xlens: Numpy array with shape (batch_size), ints representing
                 the length of the answers.
-            temp: float, the temperature for sampling.
 
         Returns:
             y: Numpy array with shape (batch_size, output_len, num_classes),
@@ -389,7 +380,6 @@ class QuestionGenerator(object):
         feed_dict = {
             self.input_pl: x,
             self.input_len_pl: xlen,
-            self.temp_pl: temp,
         }
 
         y = self._sess.run(self.inferred_question, feed_dict=feed_dict)
@@ -437,10 +427,6 @@ class QuestionGenerator(object):
     @property
     def target_len_pl(self):
         return self._target_len_pl
-
-    @property
-    def temp_pl(self):
-        return self._temp_pl
 
     @property
     def num_classes(self):

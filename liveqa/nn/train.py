@@ -43,7 +43,7 @@ def main(_):
 
     model = QuestionGenerator(sess,
                               yahoo.ANSWER_MAXLEN,
-                              yahoo.QUESTION_TITLE_MAXLEN,
+                              yahoo.QUESTION_MAXLEN,
                               yahoo.NUM_TOKENS,
                               logdir=LOGDIR)
     model.load(ignore_missing=True)
@@ -51,8 +51,8 @@ def main(_):
     raw_input('Press <ENTER> to begin training')
 
     # Gets the data iterator.
-    data_iter = yahoo.iterate_answer_to_question(BATCH_SIZE)
-    sample_iter = yahoo.iterate_answer_to_question(1)  # For visualization.
+    data_iter = yahoo.iterate_answer_to_question(BATCH_SIZE, False)
+    sample_iter = yahoo.iterate_answer_to_question(1, True)  # For visualization.
 
     total_start_time = datetime.datetime.now()
     for epoch_idx in xrange(1, NB_EPOCH + 1):
@@ -72,20 +72,19 @@ def main(_):
         model.save()
 
         # Samples from the model.
-        qsamples, asamples, _, alens = sample_iter.next()
-        temps = [0.1, 0.2, 0.5, 1., 2.]
-        qpreds = [model.sample(asamples, alens, t) for t in temps]
+        qsamples, asamples, _, alens, refs = sample_iter.next()
+        qpred = model.sample(asamples, alens)
 
         s = []
         s.append('epoch %d / %d, seen %d' %
                  (epoch_idx, NB_EPOCH,
                   epoch_idx * BATCH_SIZE * BATCHES_PER_EPOCH))
         s.append('%d (%d) seconds' % (int(time_passed), total_time_passed))
-        s.append('answer: "%s"' % yahoo.detokenize(asamples[0]))
-        s.append('target: "%s"' % yahoo.detokenize(qsamples[0], argmax=False))
-        for temp, qpred in zip(temps, qpreds):
-            s.append('temp %.1f pred: "%s"'
-                     % (temp, yahoo.detokenize(qpred[0], argmax=True)))
+        s.append('answer: "%s"'
+                 % yahoo.detokenize(asamples[0], refs[0], show_missing=True))
+        s.append('target: "%s"'
+                 % yahoo.detokenize(qsamples[0], refs[0], show_missing=True))
+        s.append('pred: "%s"' % yahoo.detokenize(qpred[0], refs[0], True))
         sys.stdout.write(' | '.join(s) + '\n')
 
 
