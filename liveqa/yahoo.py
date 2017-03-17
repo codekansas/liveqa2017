@@ -102,10 +102,10 @@ def tokenize(question, answer, use_pad=False, include_rev=False):
     idxs = dict((c, i + 3) for i, c in enumerate(tok_answers))
 
     def _encode(w):
-        if w in idxs:
-            return idxs[w]
         if w in _CHAR_TO_IDX:
             return _CHAR_TO_IDX[w]
+        if w in idxs:
+            return idxs[w]
         return OUT_OF_VOCAB
 
     if include_rev:
@@ -134,12 +134,12 @@ def detokenize(tokens, rev_dict, argmax=False, show_missing=False):
         tokens = np.argmax(tokens, axis=-1)
 
     def _decode(i):
-        if i < 3:
-            return 'X' if show_missing else ''
-        elif i < NUM_SPECIAL:
-            return rev_dict.get(i, 'X' if show_missing else '')
-        else:
+        if i > NUM_SPECIAL:
             return _DICTIONARY[i - NUM_SPECIAL]
+        elif i in rev_dict:
+            return '%s(%d)' % (rev_dict[i], i)
+        else:
+            return 'X' if show_missing else ''
 
     words = [_decode(w) for w in tokens]
     sentence = ' '.join(w for w in words if w)

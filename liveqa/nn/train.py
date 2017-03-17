@@ -21,7 +21,7 @@ tf.app.flags.DEFINE_integer('batch_size', 32,
                             'size of each training minibatch.')
 tf.app.flags.DEFINE_integer('batches_per_epoch', 100,
                             'number of minibatches per training epoch')
-tf.app.flags.DEFINE_integer('nb_epoch', 10000,  # Goes through all data.
+tf.app.flags.DEFINE_integer('nb_epoch', 30000,  # Goes through all data.
                             'number of epochs to train the model for')
 tf.app.flags.DEFINE_bool('rebuild_model', True,
                          'if set, reset the model weights')
