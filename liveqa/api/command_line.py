@@ -7,9 +7,13 @@ To use this script, run:
 from __future__ import absolute_import
 from __future__ import print_function
 
+print('Initializing the API...')
+
+import logging
+logging.basicConfig(level=logging.DEBUG)
+
 import argparse
-from liveqa.api import get_question
-from liveqa.api import get_answer
+from liveqa.api import lsi_api
 
 parser = argparse.ArgumentParser(
     description='Command-line utility for the LiveQA API.',
@@ -31,5 +35,5 @@ else:
 print('Running "%s" mode.' % args.mode)
 query = raw_input('Enter a query (None to break): ')
 while query:
-    print(api(query))
+    print('Response:', api(query))
     query = raw_input('Enter another query (None to end): ')

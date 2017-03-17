@@ -14,6 +14,7 @@ from __future__ import division
 from __future__ import absolute_import
 
 import xml.sax
+import random
 
 from liveqa.rank.shallow_rank import ShallowRank
 from liveqa.vertical.indexing import Indexing
@@ -38,6 +39,17 @@ NUM_THREADS = 1  # Number of background threads to run at once.
 # Creates the main events queue that handles inter-thread communication.
 query_queue = Queue(maxsize=MAX_JOBS)
 
+logging.info('Initializing ShallowRank object...')
+_ranker = ShallowRank()  # This is the LSI ranker.
+
+logging.info('Initializing Whoosh parser...')
+_handler = XmlParseHandler()
+_handler.indexing.turnOnReadMode()  # Only use handler in read mode.
+
+_parser = xml.sax.make_parser()
+_parser.setFeature(xml.sax.handler.feature_namespaces, 0)
+_parser.setContentHandler(_handler)
+
 
 class QueryJob(object):
     """Container to hold a query job, which the background threads process."""
@@ -58,7 +70,7 @@ class QueryJob(object):
 
         self._query = query
         self._query_type = query_type
-        self._flag
+        self._flag = flag
         self._response = None
 
     @property
@@ -83,53 +95,53 @@ class QueryJob(object):
         self._flag.set()
 
 
-def process_thread(e):
+def process_thread():
     """Thread that processes queries in the background.
 
     Args:
         e: a Threading event that is set once everything is ready to go.
     """
 
-    _query_queue = Queue(maxsize=MAX_JOBS)
-    _ranker = ShallowRanker()  # This is the LSI ranker.
-
-    _handler = XmlParseHandler()
-    _handler.indexing.turnOnReadMode()  # Only use handler in read mode.
-
-    _parser = xml.sax.make_parser()
-    _parser.setFeature(xml.sax.handler.feature_namespaces, 0)
-    _parser.setContentHandler(handler)
-
-    e.set()  # Tells main thread that everything is read to go.
-
     while True:
         query_job = query_queue.get()  # Blocks until a new question appears.
 
-        if query_type == 'question':
+        if query_job.query_type == 'question':
             candidates = _handler.indexing.get_top_n_questions(
-                query, limit=SHALLOW_LIMIT)
-            question = _ranker.get_candidates(query, candidates, nc=1)[0]
-            query_job.set_response(question)
+                query_job.query, limit=SHALLOW_LIMIT)
+            _handler.indexing.closeIndexing()
+            # question = _ranker.get_candidates(
+            #     query_job.query, candidates, nc=1)[0]
+            question = random.choice(candidates)
+            if questions:
+                query_job.set_response(question)
+            else:
+                query_job.set_response('No questions found.')
             query_job.set_flag()
 
         elif query_job.query_type == 'answer':
             candidates = _handler.indexing.get_top_n_answers(
-                query, limit=SHALLOW_LIMIT)
-            answer = _ranker.get_candidates(query, candidates, nc=1)[0]
-            query_job.set_response(answer)
+                query_job.query, limit=SHALLOW_LIMIT)
+            _handler.indexing.closeIndexing()
+            answers = _ranker.get_candidates(
+                query_job.query, candidates, nc=1)
+            if answers:
+                query_job.set_response(answers[0])
+            else:
+                query_job.set_response('No answers found.')
             query_job.set_flag()
 
         else:
-            raise ValueError('Invalid query type: "%s"' % query_job.query_type)
+            raise ValueError('Invalid query type: "%s"'
+                             % query_job.query_type)
 
 for i in range(NUM_THREADS):
     flag = threading.Event()
+
+    logging.info('Creating processing thread %d' % i)
     t = threading.Thread(name='process_thread_%d' % i,
-                         target=process_thread,
-                         args=(flag,))
+                         target=process_thread)
     t.setDaemon(True)  # Dies when the main thread dies.
     t.start()
-    flag.wait()  # Waits for the thread to get up and running.
 
 
 def get_response(text, query_type):
@@ -151,9 +163,9 @@ def get_response(text, query_type):
     query_job = QueryJob(query=text, query_type=query_type, flag=flag)
 
     query_queue.put(query_job)
-    event.wait(timeout=MAX_WAIT_TIME)  # Wait for the job to finish.
+    flag.wait(timeout=MAX_WAIT_TIME)  # Wait for the job to finish.
 
-    return query_queue.response
+    return query_job.response
 
 
 def get_question(text):

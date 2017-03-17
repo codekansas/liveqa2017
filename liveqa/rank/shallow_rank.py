@@ -169,9 +169,6 @@ class ShallowRank(object):
         vec_emb = self.model[query_vec]
         candidate_emb = self.model[candidates_bow]
 
-        print('vec emb:', vec_emb)
-        print('candidate emb:', candidate_emb[0])
-
         index = similarities.MatrixSimilarity(candidate_emb,
                                               num_best=nc,
                                               num_features=self.num_topics)
