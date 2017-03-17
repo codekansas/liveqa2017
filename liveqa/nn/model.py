@@ -193,7 +193,7 @@ class QuestionGenerator(object):
 
         return weight
 
-    def build(self, num_rnn=2, rnn_size=128):
+    def build(self, num_rnn=2, rnn_size=256):
         """Builds the model, initializing weights.
 
         TODO: Docstring.
@@ -210,7 +210,8 @@ class QuestionGenerator(object):
         x = tf.nn.embedding_lookup(emb, x)
 
         with tf.variable_scope('encoder'):
-            cell = tf.contrib.rnn.GRUCell(rnn_size)
+            cells = [tf.contrib.rnn.GRUCell(rnn_size) for _ in range(num_rnn)]
+            cell = tf.contrib.rnn.MultiRNNCell(cells)
             cell = tf.contrib.rnn.FusedRNNCellAdaptor(cell,
                                                       use_dynamic_rnn=True)
 
@@ -230,14 +231,21 @@ class QuestionGenerator(object):
                 # attn_vec_bw = tf.reduce_max(attn_vec_bw, axis=0)
 
             attn_vec = tf.concat([attn_vec_fw, attn_vec_bw], axis=-1)
-            enc_states = tf.concat([enc_states_fw, enc_states_bw], axis=-1)
+            enc_states = [tf.concat([f, b], axis=-1)
+                          for f, b in zip(enc_states_fw, enc_states_bw)]
+            enc_states = tf.concat(enc_states, axis=-1)
+
+            enc_W = self.get_weight('enc_W',
+                                    (rnn_size * 2 * num_rnn, rnn_size * 2))
+            enc_b = self.get_weight('enc_b', (rnn_size * 2,), init='zero')
+            enc_states = tf.nn.bias_add(tf.matmul(enc_states, enc_W), enc_b)
 
         # Puts the batch dimension first.
         attn_vec = tf.transpose(attn_vec, (1, 0, 2))
 
         # Builds the attention component.
         k, v, score_fn, construct_fn = tf.contrib.seq2seq.prepare_attention(
-            attn_vec, 'luong', rnn_size * 2)
+            attn_vec, 'bahdanau', rnn_size * 2)
 
         train_decoder_fn = tf.contrib.seq2seq.attention_decoder_fn_train(
             enc_states, k, v, score_fn, construct_fn)

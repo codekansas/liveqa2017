@@ -96,11 +96,8 @@ NUM_TOKENS = NUM_SPECIAL + len(_DICTIONARY)
 def tokenize(question, answer, use_pad=False, include_rev=False):
     """Converts text to tokens."""
 
-    tok_questions = word_tokenize(question)[:QUESTION_MAXLEN]
-    tok_answers = word_tokenize(answer)[:ANSWER_MAXLEN]
-
-    question_len = len(tok_questions)
-    answer_len = len(tok_answers)
+    tok_questions = word_tokenize(question)[:QUESTION_MAXLEN-1]
+    tok_answers = word_tokenize(answer)[:ANSWER_MAXLEN-1]
 
     idxs = dict((c, i + 3) for i, c in enumerate(tok_answers))
 
@@ -114,13 +111,14 @@ def tokenize(question, answer, use_pad=False, include_rev=False):
     if include_rev:
         rev_dict = dict((i + 3, c) for i, c in enumerate(tok_answers))
 
-    tok_questions = [_encode(w) for w in tok_questions]
-    tok_answers = [_encode(w) for w in tok_answers]
+    tok_questions = [_encode(w) for w in tok_questions] + [END_IDX]
+    tok_answers = [_encode(w) for w in tok_answers] + [END_IDX]
+
+    question_len = len(tok_questions)
+    answer_len = len(tok_answers)
 
     if use_pad is not None:
-        tok_questions = tok_questions[:QUESTION_MAXLEN]
         tok_questions += [END_IDX] * (QUESTION_MAXLEN - len(tok_questions))
-        tok_answers = tok_answers[:ANSWER_MAXLEN]
         tok_answers += [END_IDX] * (ANSWER_MAXLEN - len(tok_answers))
 
     if include_rev:
