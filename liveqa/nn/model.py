@@ -232,6 +232,7 @@ class QuestionGenerator(object):
             attn_vec = tf.concat([attn_vec_fw, attn_vec_bw], axis=-1)
             enc_states = tf.concat([enc_states_fw, enc_states_bw], axis=-1)
 
+        # Puts the batch dimension first.
         attn_vec = tf.transpose(attn_vec, (1, 0, 2))
 
         # Builds the attention component.

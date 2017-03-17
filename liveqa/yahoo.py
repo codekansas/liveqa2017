@@ -26,8 +26,8 @@ import logging
 
 # Constants.
 QUESTION_MAXLEN = 50
-ANSWER_MAXLEN = 100
-DICT_SIZE = 30000  # Maximum number of words to include in the corpus.
+ANSWER_MAXLEN = 99
+DICT_SIZE = 50000  # Maximum number of words to include in the corpus.
 DATA_ENV_NAME = 'YAHOO_DATA'  # Directory containing the Yahoo data, unzipped.
 YAHOO_L6_URL = 'http://webscope.sandbox.yahoo.com/catalog.php?datatype=l'
 
@@ -51,7 +51,7 @@ def word_tokenize(text):
         text = '' if text is None else text.text
 
     text = re.sub('\<.+?\>', '', text)
-    text = re.findall('[\w\d\']+|[?\.!-\*]+', text.lower())
+    text = re.findall('[\w\d\']+|[?\.,!-\*]+', text.lower())
 
     return text
 
@@ -72,7 +72,7 @@ if not os.path.exists(DICTIONARY_FILE):  # Creates the dictionary.
                                  % (num_docs, len(counter)))
                 sys.stdout.flush()
 
-            if num_docs == 100000:
+            if num_docs == 200000:
                 break
 
     _DICTIONARY = [w for w, _ in counter.most_common(DICT_SIZE)]
@@ -96,11 +96,11 @@ NUM_TOKENS = NUM_SPECIAL + len(_DICTIONARY)
 def tokenize(question, answer, use_pad=False, include_rev=False):
     """Converts text to tokens."""
 
-    tok_questions = word_tokenize(question)
-    tok_answers = word_tokenize(answer)
+    tok_questions = word_tokenize(question)[:QUESTION_MAXLEN]
+    tok_answers = word_tokenize(answer)[:ANSWER_MAXLEN]
 
-    question_len = min(len(tok_questions), QUESTION_MAXLEN)
-    answer_len = min(len(tok_answers), ANSWER_MAXLEN)
+    question_len = len(tok_questions)
+    answer_len = len(tok_answers)
 
     idxs = dict((c, i + 3) for i, c in enumerate(tok_answers))
 
@@ -139,7 +139,7 @@ def detokenize(tokens, rev_dict, argmax=False, show_missing=False):
         if i < 3:
             return 'X' if show_missing else ''
         elif i < NUM_SPECIAL:
-            return rev_dict[i]
+            return rev_dict.get(i, 'X' if show_missing else '')
         else:
             return _DICTIONARY[i - NUM_SPECIAL]
 
@@ -209,10 +209,10 @@ if __name__ == '__main__':
     for q, a in itertools.islice(iterable, 3):
         print('[iterate_qa_pairs]', 'q:', q, 'a:', a)
 
-    args = iterate_answer_to_question(3, True).next()
+    args = iterate_answer_to_question(5, True).next()
     q, a, qlen, alen, ref = args
 
-    for i in range(3):
+    for i in range(5):
         q_d = detokenize(q[i], ref[i], show_missing=True)
         a_d = detokenize(a[i], ref[i], show_missing=True)
         print('[iterate_answer_to_question]', 'q:', q_d, 'a:', a_d)

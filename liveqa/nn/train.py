@@ -17,7 +17,7 @@ from .. import yahoo
 import tensorflow as tf
 
 # Defines command line flags.
-tf.app.flags.DEFINE_integer('batch_size', 100,
+tf.app.flags.DEFINE_integer('batch_size', 32,
                             'size of each training minibatch.')
 tf.app.flags.DEFINE_integer('batches_per_epoch', 100,
                             'number of minibatches per training epoch')
