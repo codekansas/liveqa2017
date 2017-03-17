@@ -3,7 +3,7 @@ from whoosh.analysis import StemmingAnalyzer
 from whoosh.index import create_in, open_dir, exists_in
 from whoosh.writing import AsyncWriter
 from whoosh.fields import *
-from whoosh.qparser import QueryParser, syntax
+from whoosh.qparser import QueryParser, MultifieldParser, syntax
 
 import os.path
 
@@ -96,7 +96,31 @@ class Indexing(object):
 
         return text
 
-    def get_top_n(self, query, limit=100):
+    def get_top_n_questions(self, query, limit=100):
+        """Returns the top questions related to a given query.
+
+        Args:
+            query: str, the query to parse.
+            limit: int, the maximum number of documents to return.
+
+        Returns:
+            list of strings, the top results for the given query.
+        """
+
+        logging.info('query: %s', query)
+        self.query = MultifieldParser(['title', 'body', 'ba'],
+                                      schema=self.ix.schema,
+                                      group=syntax.OrGroup).parse(query)
+
+        searcher = self.ix.searcher()
+        results = searcher.search(self.query, limit=limit)
+
+        # Cleans the retrieved results.
+        results = [self.clean(result.get('title')) for result in results]
+
+        return results
+
+    def get_top_n_answers(self, query, limit=100):
         """Returns the top results for a given query.
 
         Args:
@@ -107,18 +131,15 @@ class Indexing(object):
             list of strings, the top results for the given query.
         """
 
-        # query = (QueryParser("content", self.ix.schema)
-        #          .parse("Why are yawns contagious"))
-        self.query = (QueryParser("title", self.ix.schema, group=syntax.OrGroup)
-                      .parse(query))
-
-        logging.info(self.query)
-        logging.info(self.ix.doc_count())
+        logging.info('query: %s', query)
+        self.query = MultifieldParser(['ba'],
+                                      schema=self.ix.schema,
+                                      group=syntax.OrGroup).parse(query)
 
         searcher = self.ix.searcher()
         results = searcher.search(self.query, limit=limit)
 
         # Cleans the provided results.
-        results = [self.clean(result.get("ba")) for result in results]
+        results = [self.clean(result.get('ba')) for result in results]
 
         return results

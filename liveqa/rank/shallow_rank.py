@@ -1,7 +1,25 @@
+"""This script creates the classes that perform shallow ranking.
+
+To train the model, from the top level directory run:
+    python -m liveqa.rank.shallow_rank
+
+Below is an example of using the ShallowRank class:
+
+    query = 'a query as a string'
+    candidates = ['candidate', 'answers', 'as', 'strings']
+    ranker = ShallowRank()
+    answers = ranker.get_candidates(query, candidates, nc=10)
+
+The model currently uses LDA with 100 topics trained on 1M Yahoo Answers
+responses. For more implementation details see the code below.
+"""
+
 from __future__ import absolute_import
 from __future__ import print_function
 
 from gensim import models, corpora, similarities
+import numpy as np
+
 from liveqa import yahoo
 
 import logging
@@ -15,6 +33,8 @@ STOPWORDS_FILE = os.path.join(BASE, 'stopwords.txt')
 DICTIONARY_FILE = os.path.join(BASE, 'dictionary.pkl')
 MODEL_FILE = os.path.join(BASE, 'model.gensim')
 NUM_TOPICS = 100
+USE_TEMP_DIR = False  # Set to true to debug.
+NUM_ANSWERS = 1000000  # How many answers to use to train LDA model.
 
 
 class ShallowRank(object):
@@ -52,6 +72,8 @@ class ShallowRank(object):
         # Loads an existing model file, if one exists.
         if os.path.exists(self.model_file):
             self.model = models.LdaModel.load(self.model_file)
+        else:
+            logging.warn('No model found in "%s"', self.model_file)
 
     def tokenize(self, document):
         """Tokenizes a document.
@@ -70,6 +92,22 @@ class ShallowRank(object):
         tokens = re.findall('[\w\d\']+|[?\.!-\*]+', document.lower())
 
         return tokens
+
+    def clean(self, text):
+        """Cleans a selection of text.
+
+        This simply removes HTML and double spaces using regex.
+
+        Args:
+            text: str, the text to clean.
+
+        Returns:
+            the cleaned text.
+        """
+
+        text = re.sub('(  +|\<.+?\>)+', ' ', text).strip()
+
+        return text
 
     def train(self, corpus, passes=1):
         """Updates dictionary and model given a corpus.
@@ -108,7 +146,7 @@ class ShallowRank(object):
         # Saves the model to use later.
         self.model.save(self.model_file)
 
-    def get_candidates(self, query, candidatesm, nc=None):
+    def get_candidates(self, query, candidates, nc=None):
         """Gets the top N candidate answers for a query.
 
         Args:
@@ -129,18 +167,21 @@ class ShallowRank(object):
 
         # Creates bag-of-words from each document.
         vec_emb = self.model[query_vec]
-        index = similarities.MatrixSimilarity(self.model[candidates_bow])
+        candidate_emb = self.model[candidates_bow]
+
+        print('vec emb:', vec_emb)
+        print('candidate emb:', candidate_emb[0])
+
+        index = similarities.MatrixSimilarity(candidate_emb,
+                                              num_best=nc,
+                                              num_features=self.num_topics)
 
         # Sorts documents by similarity to query.
         sims = index[vec_emb]
-        sims = sorted(enumerate(sims), key=lambda item: -item[1])
-
+        if nc is None:
+            sims = sorted(enumerate(sims), key=lambda item: -item[1])[:nc]
         selected = [sim[0] for sim in sims]
-        if nc is not None:
-            selected = selected[:nc]
-
-        # Gets the original candidate texts (untokenized).
-        results = [candidates[n] for n in selected]
+        results = [self.clean(candidates[n]) for n in selected]
 
         return results
 
@@ -151,10 +192,11 @@ if __name__ == '__main__':  # Builds the index from the full corpus.
     # Turn on logging.
     logging.basicConfig(level=logging.DEBUG)
 
-    ranker = ShallowRank(dictionary_file='/tmp/dictionary.pkl',
-                         model_file='/tmp/model.gensim')
-
-    NUM_ANSWERS = 1000000  # How many answers to use to train LDA model.
+    if USE_TEMP_DIR:
+        ranker = ShallowRank(dictionary_file='/tmp/dictionary.pkl',
+                             model_file='/tmp/model.gensim')
+    else:
+        ranker = ShallowRank()
 
     iterable = yahoo.iterate_qa_pairs(convert_to_tokens=False)
     iterable = itertools.islice(iterable, NUM_ANSWERS)

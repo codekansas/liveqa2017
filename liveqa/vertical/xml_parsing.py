@@ -1,4 +1,19 @@
+"""This script provides access to the ranking functions.
+
+To run the demo script (which first queries the Whoosh index, then does
+fine-grain filtering using the LDA index in shallow_rank.py), run:
+    python -m liveqa.vertical.xml_parsing
+
+When READ_MODE=True, this will provide an interactive console to ask questions
+and get responses from the model.
+
+To train the model, set the READ_MODE variable below to False. This process
+takes a while to run, since it has to build the index for 4 million documents.
+It is probably easier to get this from someone else.
+"""
+
 from __future__ import absolute_import
+from __future__ import print_function
 
 import logging
 import xml.sax
@@ -33,27 +48,20 @@ class XmlParseHandler(xml.sax.ContentHandler):
 
     def startElement(self, tag, attrs):
         self.tag = tag
-        # if tag == 'vespaadd':
-        #     print ''
 
     def endElement(self, tag):
         if tag == 'document':
+            if self.num_docs % 1000 == 0:
+                logging.info('Indexed document %d', self.num_docs)
 
-            if self.i % 1000 == 0:
-                logging.info('Indexed document %d', self.i)
-
-            if self.i < self.max_docs:
-                self.indexing.indexing(self.subject,
-                                       self.content,
-                                       self.bestAnswer)
-                self.tag = ''
-                self.subject = u''
-                self.content = u''
-                self.bestAnswer = u''
-                self.i = self.i + 1
-            else:
-                Handler.indexing.closeWriter()
-                Handler.indexing.closeIndexing()
+            self.indexing.indexing(self.subject,
+                                   self.content,
+                                   self.bestAnswer)
+            self.tag = ''
+            self.subject = u''
+            self.content = u''
+            self.bestAnswer = u''
+            self.num_docs = self.num_docs + 1
 
     def characters(self, content):
         if self.tag == 'subject':
@@ -91,9 +99,26 @@ if (__name__ == '__main__'):
         handler.indexing.closeIndexing()
     else:
         ranker = ShallowRank()
-        query = 'query'
+        query = raw_input('Enter your question [None to quit]:\n')
+
         while query:
-            candidates = handler.indexing.get_top_n(query, limit=500)
-            print ShallowRank(1, query, candidates).shallowRank()
-            query = raw_input('Enter your question [None to quit]:\n')
+
+            # Gets candidate answers.
+            candidates = handler.indexing.get_top_n_answers(query, limit=100)
+            answers = ranker.get_candidates(query, candidates, nc=10)
+
+            # Gets candidate questions.
+            candidates = handler.indexing.get_top_n_questions(query, limit=100)
+            questions = ranker.get_candidates(query, candidates, nc=10)
+
+            print('Top %d Answers, sorted by relevance:' % len(answers))
+            for i, answer in enumerate(answers):
+                print('%d.' % (i + 1), answer)
+
+            print('Top %d Questions, sorted by relevance:' % len(questions))
+            for i, question in enumerate(questions):
+                print('%d.' % (i + 1), question)
+
+            query = raw_input('Enter another question [None to quit]:\n')
+
         handler.indexing.closeIndexing()
