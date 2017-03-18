@@ -26,7 +26,7 @@ import logging
 
 # Constants.
 QUESTION_MAXLEN = 50
-ANSWER_MAXLEN = 99
+ANSWER_MAXLEN = 100
 DICT_SIZE = 50000  # Maximum number of words to include in the corpus.
 DATA_ENV_NAME = 'YAHOO_DATA'  # Directory containing the Yahoo data, unzipped.
 YAHOO_L6_URL = 'http://webscope.sandbox.yahoo.com/catalog.php?datatype=l'
@@ -51,7 +51,7 @@ def word_tokenize(text):
         text = '' if text is None else text.text
 
     text = re.sub('\<.+?\>', '', text)
-    text = re.findall('[\w\d\']+|[?\.,!-\*]+', text.lower())
+    text = re.findall('[\w\d\']+|[?\.,!-\*;\"@#$%^&\(\)]+', text.lower())
 
     return text
 
@@ -134,7 +134,7 @@ def detokenize(tokens, rev_dict, argmax=False, show_missing=False):
         tokens = np.argmax(tokens, axis=-1)
 
     def _decode(i):
-        if i > NUM_SPECIAL:
+        if i >= NUM_SPECIAL:
             return _DICTIONARY[i - NUM_SPECIAL]
         elif i in rev_dict:
             return '%s(%d)' % (rev_dict[i], i)

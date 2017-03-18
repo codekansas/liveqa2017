@@ -193,7 +193,7 @@ class QuestionGenerator(object):
 
         return weight
 
-    def build(self, num_rnn=2, rnn_size=256):
+    def build(self, num_rnn=2, rnn_size=256, num_embed=500):
         """Builds the model, initializing weights.
 
         TODO: Docstring.
@@ -205,7 +205,7 @@ class QuestionGenerator(object):
         x = self.input_pl  # Represents the output after each layer.
 
         # Converts input to one-hot encoding.
-        emb = self.get_weight('emb', (self.num_classes, 200),
+        emb = self.get_weight('emb', (self.num_classes, num_embed),
                               init='glorot')
         x = tf.nn.embedding_lookup(emb, x)
 
