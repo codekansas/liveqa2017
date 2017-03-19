@@ -12,6 +12,7 @@ index/
 
 # Other packages.
 seq2seq/
+faiss/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
