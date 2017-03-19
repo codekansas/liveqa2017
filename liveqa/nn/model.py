@@ -152,7 +152,8 @@ class QuestionGenerator(object):
     def get_weight(self, name, shape,
                    init='glorot',
                    device='gpu',
-                   weight_val=None):
+                   weight_val=None,
+                   trainable=True):
         """Returns a new weight.
 
         Args:
@@ -161,6 +162,7 @@ class QuestionGenerator(object):
             init: str, the type of initialize to use.
             device: str, 'cpu' or 'gpu'.
             weight_val: Numpy array to use as the initial weights.
+            trainable: bool, if this variable is trainable or not.
         """
 
         if weight_val is None:
@@ -192,7 +194,7 @@ class QuestionGenerator(object):
             on_gpu = False
 
         with tf.device('/gpu:0' if on_gpu else '/cpu:0'):
-            weight = tf.Variable(weight_val, name=name)
+            weight = tf.Variable(weight_val, name=name, trainable=trainable)
         self._weights.append(weight)
 
         return weight
@@ -216,7 +218,8 @@ class QuestionGenerator(object):
 
         # Converts input to one-hot encoding.
         emb = self.get_weight('emb', (self.num_classes, num_embed),
-                              init='glorot', weight_val=self.embeddings)
+                              init='glorot', weight_val=self.embeddings,
+                              trainable=False)
         x = tf.nn.embedding_lookup(emb, x)
 
         with tf.variable_scope('encoder'):
@@ -576,7 +579,8 @@ class QuestionGAN(QuestionGenerator):
         x = self.input_pl  # Represents the output after each layer.
 
         emb = self.get_weight('emb', (self.num_classes, num_embed),
-                              init='glorot', weight_val=self.embeddings)
+                              init='glorot', weight_val=self.embeddings,
+                              trainable=False)
 
         # Constructs the encoder the same as the vanilla model.
         with tf.variable_scope('encoder'):
@@ -615,7 +619,7 @@ class QuestionGAN(QuestionGenerator):
 
             # Gets the encoder weights.
             encoder_weights = tf.get_collection(
-                tf.GraphKeys.GLOBAL_VARIABLES, scope='encoder') + [emb]
+                tf.GraphKeys.GLOBAL_VARIABLES, scope='encoder')
 
         # Builds the generator slightly differently.
         with tf.variable_scope('generator'):

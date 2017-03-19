@@ -185,7 +185,7 @@ def get_word_embeddings(num_dimensions=500,
     """
 
     if os.path.exists(cache_loc):
-        weights = np.load(cache_loc)
+        embeddings = np.load(cache_loc)
     else:
         class SentenceGenerator(object):
             def __iter__(self):

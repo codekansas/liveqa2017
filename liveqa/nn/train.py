@@ -46,14 +46,14 @@ def main(_):
                             yahoo.ANSWER_MAXLEN,
                             yahoo.QUESTION_MAXLEN,
                             yahoo.NUM_TOKENS,
-                            embeddings=get_word_embeddings()
+                            embeddings=get_word_embeddings(),
                             logdir=LOGDIR)
     else:
         model = QuestionGenerator(sess,
                                   yahoo.ANSWER_MAXLEN,
                                   yahoo.QUESTION_MAXLEN,
                                   yahoo.NUM_TOKENS,
-                                  embeddings=yahoo.get_word_embeddings()
+                                  embeddings=yahoo.get_word_embeddings(),
                                   logdir=LOGDIR)
     model.load(ignore_missing=True)
 
