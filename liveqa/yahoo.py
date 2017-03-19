@@ -93,11 +93,31 @@ _CHAR_TO_IDX = dict((c, i + NUM_SPECIAL) for i, c in enumerate(_DICTIONARY))
 NUM_TOKENS = NUM_SPECIAL + len(_DICTIONARY)
 
 
-def tokenize(question, answer, use_pad=False, include_rev=False):
-    """Converts text to tokens."""
+def tokenize(question=None, answer=None, use_pad=False, include_rev=False):
+    """Converts text to tokens.
+
+    Args:
+        question: str or None, the question as a string.
+        answer: str or None, the answer as a string.
+        use_pad: bool, if set, pad to a specific length with end tokens.
+        include_rev: bool, if set, include the "reverse" dictionary.
+
+    Returns:
+        tok_questions: list of ints, the tokenized question.
+        tok_answers: list of ints, the tokenized answer.
+        question_len: int, the number of tokens in the question.
+        answer_len: int, the number of tokens in the answer.
+        if include_rev:
+            rev_dict: dictionary of int -> str pairs, for reversing from
+                the answer to the question.
+    """
+
+    if question is None:
+        question = ''
 
     tok_questions = word_tokenize(question)[:QUESTION_MAXLEN-1]
     tok_answers = word_tokenize(answer)[:ANSWER_MAXLEN-1]
+    del question, answer
 
     idxs = dict((c, i + 3) for i, c in enumerate(tok_answers))
 
@@ -108,27 +128,35 @@ def tokenize(question, answer, use_pad=False, include_rev=False):
             return idxs[w]
         return OUT_OF_VOCAB
 
-    if include_rev:
-        rev_dict = dict((i + 3, c) for i, c in enumerate(tok_answers))
+    enc_questions = [_encode(w) for w in tok_questions] + [END_IDX]
+    enc_answers = [_encode(w) for w in tok_answers] + [END_IDX]
+    del tok_questions
 
-    tok_questions = [_encode(w) for w in tok_questions] + [END_IDX]
-    tok_answers = [_encode(w) for w in tok_answers] + [END_IDX]
-
-    question_len = len(tok_questions)
-    answer_len = len(tok_answers)
+    question_len = len(enc_questions)
+    answer_len = len(enc_answers)
 
     if use_pad is not None:
-        tok_questions += [END_IDX] * (QUESTION_MAXLEN - len(tok_questions))
-        tok_answers += [END_IDX] * (ANSWER_MAXLEN - len(tok_answers))
+        enc_questions += [END_IDX] * (QUESTION_MAXLEN - len(enc_questions))
+        enc_answers += [END_IDX] * (ANSWER_MAXLEN - len(enc_answers))
 
     if include_rev:
-        return tok_questions, tok_answers, question_len, answer_len, rev_dict
+        rev_dict = dict((i + 3, c) for i, c in enumerate(tok_answers))
+        del tok_answers
+        return enc_questions, enc_answers, question_len, answer_len, rev_dict
     else:
-        return tok_questions, tok_answers, question_len, answer_len
+        del tok_answers
+        return enc_questions, enc_answers, question_len, answer_len
 
 
 def detokenize(tokens, rev_dict, argmax=False, show_missing=False):
-    """Converts question back to tokens."""
+    """Converts question back to tokens.
+
+    Args:
+        tokens: list of ints, the tokens to be reversed.
+        rev_dict: the reverse dictionary (provided by the answer text).
+        argmax: bool, if set, take argmax over last dimension of tokens.
+        show_missing: bool, if set, use 'X' to represent missing tokens.
+    """
 
     if argmax:
         tokens = np.argmax(tokens, axis=-1)
@@ -145,6 +173,57 @@ def detokenize(tokens, rev_dict, argmax=False, show_missing=False):
     sentence = ' '.join(w for w in words if w)
 
     return sentence
+
+
+def get_word_embeddings(num_dimensions=500,
+                        cache_loc='word_embeddings.h5'):
+    """Generates word embeddings.
+
+    Args:
+        num_dimensions: int, number of embedding dimensions.
+        cache_loc: str, where to cache the word embeddings.
+    """
+
+    if os.path.exists(cache_loc):
+        weights = np.load(cache_loc)
+    else:
+        class SentenceGenerator(object):
+            def __iter__(self):
+                for i, (question, answer) in enumerate(iterate_qa_pairs(), 1):
+                    q, a, _, _ = tokenize(question=question, answer=answer,
+                                          use_pad=False, include_rev=False)
+                    yield [str(w) for w in q]
+                    yield [str(w) for w in a]
+
+                    del q, a, w
+
+                    if i % 1000 == 0:
+                        sys.stderr.write('\rprocessed %d' % i)
+                        sys.stderr.flush()
+
+                sys.stderr.write('\rprocessed %d\n' % i)
+                sys.stderr.flush()
+
+        # The default embeddings.
+        embeddings = np.random.normal(size=(NUM_TOKENS, num_dimensions))
+
+        sentences = SentenceGenerator()
+        model = models.Word2Vec(sentences, size=num_dimensions)
+
+        word_vectors = model.wv
+        del model
+
+        # Puts the Word2Vec weights into the right order.
+        weights = word_vectors.syn0
+        vocab = word_vectors.vocab
+        for k, v in vocab.items():
+            embeddings[int(k)] = weights[v.index]
+
+        with open(cache_loc, 'wb') as f:
+            np.save(f, weights)
+            pass
+
+    return embeddings
 
 
 def iterate_qa_pairs():
@@ -168,6 +247,7 @@ def iterate_qa_pairs():
         for event, elem in parser:
             if elem.tag == 'document':
                 yield _parse_document(elem)
+                elem.clear()  # Important for avoiding memory issues.
 
 
 def iterate_answer_to_question(batch_size, include_ref):
@@ -201,16 +281,5 @@ def iterate_answer_to_question(batch_size, include_ref):
 
 
 if __name__ == '__main__':
-    import itertools
-
-    iterable = iterate_qa_pairs()
-    for q, a in itertools.islice(iterable, 3):
-        print('[iterate_qa_pairs]', 'q:', q, 'a:', a)
-
-    args = iterate_answer_to_question(5, True).next()
-    q, a, qlen, alen, ref = args
-
-    for i in range(5):
-        q_d = detokenize(q[i], ref[i], show_missing=True)
-        a_d = detokenize(a[i], ref[i], show_missing=True)
-        print('[iterate_answer_to_question]', 'q:', q_d, 'a:', a_d)
+    emb = get_word_embeddings()
+    print('emb:', emb.shape)

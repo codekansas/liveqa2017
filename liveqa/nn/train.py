@@ -10,7 +10,7 @@ import datetime
 import os
 import sys
 
-from .model import QuestionGenerator
+from .model import QuestionGenerator, QuestionGAN
 
 from .. import yahoo
 
@@ -27,9 +27,9 @@ tf.app.flags.DEFINE_bool('rebuild_model', True,
                          'if set, reset the model weights')
 tf.app.flags.DEFINE_string('logdir', 'model/',
                            'directory where model is saved')
+tf.app.flags.DEFINE_bool('use_gan', False,
+                         'if set, use the GAN model instead')
 FLAGS = tf.app.flags.FLAGS
-
-
 
 def main(_):
     BATCH_SIZE = FLAGS.batch_size
@@ -41,11 +41,20 @@ def main(_):
     # Interactive session to avoid unpleasant parts.
     sess = tf.Session()
 
-    model = QuestionGenerator(sess,
-                              yahoo.ANSWER_MAXLEN,
-                              yahoo.QUESTION_MAXLEN,
-                              yahoo.NUM_TOKENS,
-                              logdir=LOGDIR)
+    if FLAGS.use_gan:
+        model = QuestionGAN(sess,
+                            yahoo.ANSWER_MAXLEN,
+                            yahoo.QUESTION_MAXLEN,
+                            yahoo.NUM_TOKENS,
+                            embeddings=get_word_embeddings()
+                            logdir=LOGDIR)
+    else:
+        model = QuestionGenerator(sess,
+                                  yahoo.ANSWER_MAXLEN,
+                                  yahoo.QUESTION_MAXLEN,
+                                  yahoo.NUM_TOKENS,
+                                  embeddings=yahoo.get_word_embeddings()
+                                  logdir=LOGDIR)
     model.load(ignore_missing=True)
 
     raw_input('Press <ENTER> to begin training')
@@ -59,9 +68,19 @@ def main(_):
         start_time = datetime.datetime.now()
         for batch_idx in xrange(1, BATCHES_PER_EPOCH + 1):
             qsamples, asamples, qlens, alens = data_iter.next()
-            loss = model.train(qsamples, asamples, qlens, alens)
-            sys.stdout.write('epoch %d: %d / %d loss = %.3e       \r'
-                             % (epoch_idx, batch_idx, BATCHES_PER_EPOCH, loss))
+            if FLAGS.use_gan:
+                pretrain = epoch_idx < 100
+                loss = model.train(qsamples, asamples, qlens, alens, pretrain)
+                sys.stdout.write('epoch %d (%s): %d / %d loss = %.3e       \r'
+                                 % (epoch_idx,
+                                    'pretraining' if pretrain else 'main',
+                                    batch_idx,
+                                    BATCHES_PER_EPOCH, loss))
+            else:
+                loss = model.train(qsamples, asamples, qlens, alens)
+                sys.stdout.write('epoch %d: %d / %d loss = %.3e       \r'
+                                 % (epoch_idx, batch_idx,
+                                    BATCHES_PER_EPOCH, loss))
             sys.stdout.flush()
 
         time_passed = (datetime.datetime.now() - start_time).total_seconds()
@@ -71,21 +90,21 @@ def main(_):
         # Saves the current model weights.
         model.save()
 
-        # Samples from the model.
-        qsamples, asamples, _, alens, refs = sample_iter.next()
-        qpred = model.sample(asamples, alens)
+        for i in range(5):
+            qsamples, asamples, _, alens, refs = sample_iter.next()
+            qpred = model.sample(asamples, alens)
 
-        s = []
-        s.append('epoch %d / %d, seen %d' %
-                 (epoch_idx, NB_EPOCH,
-                  epoch_idx * BATCH_SIZE * BATCHES_PER_EPOCH))
-        s.append('%d (%d) seconds' % (int(time_passed), total_time_passed))
-        s.append('answer: "%s"'
-                 % yahoo.detokenize(asamples[0], refs[0], show_missing=True))
-        s.append('target: "%s"'
-                 % yahoo.detokenize(qsamples[0], refs[0], show_missing=True))
-        s.append('pred: "%s"' % yahoo.detokenize(qpred[0], refs[0], True))
-        sys.stdout.write(' | '.join(s) + '\n')
+            s = []
+            s.append('epoch %d / %d, seen %d' %
+                     (epoch_idx, NB_EPOCH,
+                      epoch_idx * BATCH_SIZE * BATCHES_PER_EPOCH))
+            s.append('%d (%d) seconds' % (int(time_passed), total_time_passed))
+            s.append('answer: "%s"' % yahoo.detokenize(asamples[0], refs[0],
+                                                       show_missing=True))
+            s.append('target: "%s"' % yahoo.detokenize(qsamples[0], refs[0],
+                                                       show_missing=True))
+            s.append('pred: "%s"' % yahoo.detokenize(qpred[0], refs[0], True))
+            sys.stdout.write(' | '.join(s) + '\n')
 
 
 if __name__ == '__main__':

@@ -33,7 +33,7 @@ logging.info('By importing the API submodule, you are creating background '
 # Defines constants.
 MAX_JOBS = 10  # Maximum number of jobs that can be on the queue at once.
 SHALLOW_LIMIT = 10  # Max number of candidates to pass to shallow ranker.
-MAX_WAIT_TIME = 20  # Maximum number of seconds to wait for a query.
+MAX_WAIT_TIME = 500  # Maximum number of seconds to wait for a query.
 NUM_THREADS = 1  # Number of background threads to run at once.
 
 # Creates the main events queue that handles inter-thread communication.
@@ -108,6 +108,7 @@ def process_thread():
         if query_job.query_type == 'question':
             candidates = _handler.indexing.get_top_n_questions(
                 query_job.query, limit=SHALLOW_LIMIT)
+            logging.info('Got top %d candidates', SHALLOW_LIMIT)
             _handler.indexing.closeIndexing()
             if candidates:
                 # question = _ranker.get_candidates(

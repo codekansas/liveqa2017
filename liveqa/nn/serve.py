@@ -71,10 +71,9 @@ def create_app():
 
             # Converts to a numpy
             answers_arr = np.asarray([a[0] for a in answers])
-            answer_lens = np.asarray([a[1] for a in answers])
 
             # Runs the model to generate questions.
-            questions = model.sample(answers_arr, answer_lens, 0.5)
+            questions = model.sample_from_text(answers_arr)
 
             for e, a, q in zip(events, answers, questions):
                 a.append(q)
@@ -93,26 +92,22 @@ def create_app():
             raise RuntimeError('Answer queue is full.')
 
         # Turns the answer into the model's input.
-        answer = yahoo.clean_text(answer)
-        answer_len = min(len(answer) + 1, yahoo.ANSWER_MAXLEN)
-        answer = yahoo.tokenize(answer, pad_len=yahoo.ANSWER_MAXLEN)
         event = threading.Event()
 
         # The question generator will append the generated question to this
         # array (which, since this is Python, is mutable).
-        answer_mutable = [answer, answer_len]
+        answer_mutable = [answer]
         answer_queue.put((event, answer_mutable))
 
         # Waits for the answer to be processed.
         event.wait(timeout=MAX_PROC_WAIT)
 
-        if len(answer_mutable) != 3:
+        if len(answer_mutable) != 2:
             raise RuntimeError('The event timed out before the '
                                'process could finish.')
 
         # Decodes the answer.
-        question = answer_mutable[2]
-        question = yahoo.detokenize(question, argmax=True)
+        question = answer_mutable[1]
 
         return question
 

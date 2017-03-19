@@ -108,9 +108,12 @@ class Indexing(object):
         """
 
         logging.info('query: %s', query)
-        self.query = MultifieldParser(['title', 'body', 'ba'],
-                                      schema=self.ix.schema,
-                                      group=syntax.OrGroup).parse(query)
+        # self.query = MultifieldParser(['title', 'body', 'ba'],
+        #                               schema=self.ix.schema,
+        #                               group=syntax.OrGroup).parse(query)
+        self.query = QueryParser('body',
+                                 schema=self.ix.schema,
+                                 group=syntax.OrGroup).parse(query)
 
         searcher = self.ix.searcher()
         results = searcher.search(self.query, limit=limit)
