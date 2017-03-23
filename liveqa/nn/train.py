@@ -46,8 +46,9 @@ def main(_):
                             yahoo.ANSWER_MAXLEN,
                             yahoo.QUESTION_MAXLEN,
                             yahoo.NUM_TOKENS,
-                            embeddings=get_word_embeddings(),
+                            embeddings=yahoo.get_word_embeddings(),
                             logdir=LOGDIR)
+        model.build(discriminator_phase=5).load(ignore_missing=True)
     else:
         model = QuestionGenerator(sess,
                                   yahoo.ANSWER_MAXLEN,
@@ -55,7 +56,7 @@ def main(_):
                                   yahoo.NUM_TOKENS,
                                   embeddings=yahoo.get_word_embeddings(),
                                   logdir=LOGDIR)
-    model.load(ignore_missing=True)
+        model.load(ignore_missing=True)
 
     raw_input('Press <ENTER> to begin training')
 
@@ -69,13 +70,16 @@ def main(_):
         for batch_idx in xrange(1, BATCHES_PER_EPOCH + 1):
             qsamples, asamples, qlens, alens = data_iter.next()
             if FLAGS.use_gan:
-                pretrain = epoch_idx < 100
-                loss = model.train(qsamples, asamples, qlens, alens, pretrain)
-                sys.stdout.write('epoch %d (%s): %d / %d loss = %.3e       \r'
+                # pretrain = epoch_idx < 10
+                pretrain = False
+                g, d = model.train(qsamples, asamples, qlens, alens, pretrain)
+                sys.stdout.write('epoch %d (%s): %d / %d gen acc = %.3f, '
+                                 'dis acc = %.3f       \r'
                                  % (epoch_idx,
                                     'pretraining' if pretrain else 'main',
                                     batch_idx,
-                                    BATCHES_PER_EPOCH, loss))
+                                    BATCHES_PER_EPOCH,
+                                    g, d))
             else:
                 loss = model.train(qsamples, asamples, qlens, alens)
                 sys.stdout.write('epoch %d: %d / %d loss = %.3e       \r'

@@ -49,6 +49,7 @@ def create_app():
                                   yahoo.QUESTION_MAXLEN,
                                   yahoo.NUM_TOKENS,
                                   logdir=LOGDIR,
+                                  embeddings=get_word_embeddings(),
                                   only_cpu=True)
         model.load(ignore_missing=False)  # Model must already exist.
 

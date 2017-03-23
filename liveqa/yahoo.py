@@ -35,6 +35,7 @@ YAHOO_L6_URL = 'http://webscope.sandbox.yahoo.com/catalog.php?datatype=l'
 BASE = os.path.dirname(os.path.realpath(__file__))
 DATA_PATH = os.path.join(BASE, 'data', 'FullOct2007.xml')
 DICTIONARY_FILE = os.path.join(BASE, 'data', 'dictionary_dict.pkl')
+EMBEDDINGS_FILE = os.path.join(BASE, 'data', 'word_embeddings.h5')
 
 if not os.path.exists(DATA_PATH):
     raise RuntimeError('File not found: "%s". To create it from the existing '
@@ -135,7 +136,7 @@ def tokenize(question=None, answer=None, use_pad=False, include_rev=False):
     question_len = len(enc_questions)
     answer_len = len(enc_answers)
 
-    if use_pad is not None:
+    if use_pad:
         enc_questions += [END_IDX] * (QUESTION_MAXLEN - len(enc_questions))
         enc_answers += [END_IDX] * (ANSWER_MAXLEN - len(enc_answers))
 
@@ -176,12 +177,16 @@ def detokenize(tokens, rev_dict, argmax=False, show_missing=False):
 
 
 def get_word_embeddings(num_dimensions=500,
-                        cache_loc='word_embeddings.h5'):
+                        cache_loc=EMBEDDINGS_FILE):
     """Generates word embeddings.
 
     Args:
         num_dimensions: int, number of embedding dimensions.
         cache_loc: str, where to cache the word embeddings.
+
+    Returns:
+        numpy array representing the embeddings, with shape (NUM_TOKENS,
+            num_dimensions).
     """
 
     if os.path.exists(cache_loc):
@@ -220,14 +225,19 @@ def get_word_embeddings(num_dimensions=500,
             embeddings[int(k)] = weights[v.index]
 
         with open(cache_loc, 'wb') as f:
-            np.save(f, weights)
+            np.save(f, embeddings)
             pass
 
+    assert embeddings.shape == (NUM_TOKENS, num_dimensions)
     return embeddings
 
 
-def iterate_qa_pairs():
+def iterate_qa_pairs(num_iter=None):
     """Iterates through question-answer pairs in a single file.
+
+    Args:
+        num_iter: int (default: None), number of times to iterate. If None,
+            iterates infinitely.
 
     Yields:
         subject: the question title (max length = QUESTION_TITLE_MAXLEN)
@@ -242,20 +252,26 @@ def iterate_qa_pairs():
         return ('' if subject is None else subject.text,
                 '' if bestanswer is None else bestanswer.text)
 
-    with open(DATA_PATH, 'r') as f:
-        parser = ET.iterparse(f)
-        for event, elem in parser:
-            if elem.tag == 'document':
-                yield _parse_document(elem)
-                elem.clear()  # Important for avoiding memory issues.
+    if num_iter is None:
+        iterator = itertools.count()
+    else:
+        iterator = xrange(num_iter)
+
+    for _ in iterator:
+        with open(DATA_PATH, 'r') as f:
+            parser = ET.iterparse(f)
+            for event, elem in parser:
+                if elem.tag == 'document':
+                    yield _parse_document(elem)
+                    elem.clear()  # Important for avoiding memory issues.
 
 
-def iterate_answer_to_question(batch_size, include_ref):
+def iterate_answer_to_question(batch_size, include_ref, num_iter=None):
     """Yields Numpy arrays, representing the data."""
 
     q_toks, a_toks, q_lens, a_lens, refs = [], [], [], [], []
 
-    for i, (question, answer) in enumerate(iterate_qa_pairs(), 1):
+    for i, (question, answer) in enumerate(iterate_qa_pairs(num_iter), 1):
         args = tokenize(
             question=question, answer=answer,
             use_pad=True, include_rev=include_ref)
@@ -280,6 +296,6 @@ def iterate_answer_to_question(batch_size, include_ref):
             q_toks, a_toks, q_lens, a_lens, refs = [], [], [], [], []
 
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # Scropt for building the embeddings.
     emb = get_word_embeddings()
     print('emb:', emb.shape)

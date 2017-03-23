@@ -20,6 +20,8 @@ from __future__ import print_function
 from gensim import models, corpora, similarities
 import numpy as np
 
+import faiss
+
 from liveqa import yahoo
 
 import logging
@@ -35,6 +37,18 @@ MODEL_FILE = os.path.join(BASE, 'model.gensim')
 NUM_TOPICS = 100
 USE_TEMP_DIR = False  # Set to true to debug.
 NUM_ANSWERS = 1000000  # How many answers to use to train LDA model.
+
+
+def check_trained(f):
+    """Function decorator that makes sure the model is built before calling."""
+
+    def wrapper(self, *args, **kwargs):
+        if not hasattr(self, '_trained') or not self._trained:
+            raise RuntimeError('The model must be trained first.')
+
+        return f(self, *args, **kwargs)
+
+    return wrapper
 
 
 class ShallowRank(object):
@@ -74,6 +88,9 @@ class ShallowRank(object):
             self.model = models.LdaModel.load(self.model_file)
         else:
             logging.warn('No model found in "%s"', self.model_file)
+
+        # Determines if the model needs to be trained.
+        self._trained = self.dictionary and self.model
 
     def tokenize(self, document):
         """Tokenizes a document.
@@ -146,6 +163,10 @@ class ShallowRank(object):
         # Saves the model to use later.
         self.model.save(self.model_file)
 
+        # Flag to remember that training has taken place.
+        self._trained = True
+
+    @check_trained
     def get_candidates(self, query, candidates, nc=None):
         """Gets the top N candidate answers for a query.
 

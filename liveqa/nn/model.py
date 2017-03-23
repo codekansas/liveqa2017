@@ -162,7 +162,7 @@ class QuestionGenerator(object):
             init: str, the type of initialize to use.
             device: str, 'cpu' or 'gpu'.
             weight_val: Numpy array to use as the initial weights.
-            trainable: bool, if this variable is trainable or not.
+            trainable: bool, whether or not this weight is trainable.
         """
 
         if weight_val is None:
@@ -181,6 +181,8 @@ class QuestionGenerator(object):
                 weight_val = tf.zeros(shape)
             else:
                 raise ValueError('Invalid init: "%s"' % init)
+        else:
+            weight_val = weight_val.astype('float32')
 
         device = device.lower()
         if device == 'gpu':
@@ -198,6 +200,18 @@ class QuestionGenerator(object):
         self._weights.append(weight)
 
         return weight
+
+    def get_scope_variables(self, scope):
+        """Returns all the variables in scope.
+
+        Args:
+            scope: str, the scope to use.
+
+        Returns:
+            list of variables.
+        """
+
+        return tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=scope)
 
     def build(self, num_rnn=2, rnn_size=256, num_embed=500):
         """Builds the model, initializing weights.
@@ -294,7 +308,9 @@ class QuestionGenerator(object):
         with tf.variable_scope('reg_loss'):
             reg_loss = 0
             for w in tf.trainable_variables():
-                reg_loss += tf.nn.l2_loss(w) * 1e-4
+                if w not in [emb]:  # Ignores certain weights.
+                    reg_loss += tf.nn.l2_loss(w)
+            reg_loss *= 1e-4
 
         seq_loss = tf.contrib.seq2seq.sequence_loss(
             x, self.target_pl, weights)
@@ -501,28 +517,6 @@ class QuestionGenerator(object):
         return self._weights
 
 
-# The custom TensorFlow operations below define the "smooth" argmax function,
-# which fixes the differentiation problem for the discriminator. This is like
-# a dumb implementation of REINFORCE, since it makes the model do a Monte
-# Carlo search over a much larger search space. This is conceptually similar
-# to what BinaryNet does for deterministic gradients.
-from tensorflow.python.framework import function
-
-@function.Defun(tf.float32, tf.float32, tf.float32)
-def bprop(x, emb, grad):
-    a, b = tf.shape(x)[0], tf.shape(x)[1]
-    grad = grad[:, :b]
-    bprop_grad = tf.reshape(tf.matmul(tf.reshape(grad, (a * b, -1)), emb,
-                                      transpose_b=True),
-                            (a, b, -1))
-    # bprop_grad = tf.transpose(bprop_grad)
-    return bprop_grad, tf.stop_gradient(emb)
-
-@function.Defun(tf.float32, tf.float32, grad_func=bprop)
-def smooth_argmax(x, emb):
-    return tf.nn.embedding_lookup(emb, tf.argmax(x, axis=-1))
-
-
 class QuestionGAN(QuestionGenerator):
     """Question generator using SeqGAN model.
 
@@ -546,7 +540,7 @@ class QuestionGAN(QuestionGenerator):
             pretrain: bool, whether or not to do the pretraining phase.
 
         Returns:
-            loss: float, the total loss of the model.
+            gen_loss, dis_loss: floats, the losses of the model.
         """
 
         feed_dict = {
@@ -557,77 +551,44 @@ class QuestionGAN(QuestionGenerator):
         }
 
         train_op = self.seq_op if pretrain else self.gan_train_op
-        loss = self.seq_loss if pretrain else self.gan_loss
 
-        _, current_time, summary, loss = self._sess.run(
-            [train_op, self.time_op, self.summary_op, loss],
+        _, current_time, summary, gen_acc, dis_acc = self._sess.run(
+            [train_op, self.time_op, self.summary_op] +
+            [self.gen_acc, self.dis_acc],
             feed_dict=feed_dict)
         self.summary_writer.add_summary(summary, current_time)
 
-        return loss
+        return gen_acc, dis_acc
 
-    def build(self, num_rnn=2, rnn_size=256, num_embed=500):
-        """Builds the model, initializing weights.
+    def build_generator(self, attn_tensor, embeddings,
+                        enc_states, scope='generator'):
+        """Builds the generator model, given `attn_vec` and `enc_states`.
 
         Args:
-            See QuestionGenerator args.
+            attn_tensor: 3D Tensor with shape (batch_size, timesteps, features),
+                the vector to pay attention to.
+            embeddings: 2D Tensor with shape (num_classes, num_emb_states),
+                the embedding vectors for the words (trained using word2vec).
+            enc_states: 2D Tensor with shape (batch_size, num_outputs),
+                the initial state for the seq2seq decoder.
+            scope: str, the generator variable scope.
+
+        Returns:
+            generated_sequence: 3D Tensor with shape (batch_size, timesteps,
+                num_classes), the sequence produced by the model.
+            generator_variables: list of trainable model variables.
+            inferred_question: 2D Tensor with shape (batch_size, timesteps),
+                an int tensor representing the inferred question.
+            seq_loss: the sequence loss (for direct supervised training).
         """
 
-        if self._built:
-            return
-
-        x = self.input_pl  # Represents the output after each layer.
-
-        emb = self.get_weight('emb', (self.num_classes, num_embed),
-                              init='glorot', weight_val=self.embeddings,
-                              trainable=False)
-
-        # Constructs the encoder the same as the vanilla model.
-        with tf.variable_scope('encoder'):
-            cells = [tf.contrib.rnn.GRUCell(rnn_size) for _ in range(num_rnn)]
-            cell = tf.contrib.rnn.MultiRNNCell(cells)
-            cell = tf.contrib.rnn.FusedRNNCellAdaptor(cell,
-                                                      use_dynamic_rnn=True)
-
-            # Converts input to one-hot encoding.
-            x = tf.nn.embedding_lookup(emb, x)
-
-            with tf.variable_scope('forward'):
-                attn_vec_fw, enc_states_fw = cell(
-                    tf.transpose(x, (1, 0, 2)),
-                    dtype=tf.float32,
-                    sequence_length=self.input_len_pl)
-                # attn_vec_fw = tf.reduce_max(attn_vec_fw, axis=0)
-
-            with tf.variable_scope('backward'):
-                cell_bw = tf.contrib.rnn.TimeReversedFusedRNN(cell)
-                attn_vec_bw, enc_states_bw = cell_bw(
-                    tf.transpose(x, (1, 0, 2)),
-                    dtype=tf.float32,
-                    sequence_length=self.input_len_pl)
-                # attn_vec_bw = tf.reduce_max(attn_vec_bw, axis=0)
-
-            attn_vec = tf.concat([attn_vec_fw, attn_vec_bw], axis=-1)
-            enc_states = [tf.concat([f, b], axis=-1)
-                          for f, b in zip(enc_states_fw, enc_states_bw)]
-            enc_states = tf.concat(enc_states, axis=-1)
-
-            enc_W = self.get_weight('enc_W',
-                                    (rnn_size * 2 * num_rnn, rnn_size * 2))
-            enc_b = self.get_weight('enc_b', (rnn_size * 2,), init='zero')
-            enc_states = tf.nn.bias_add(tf.matmul(enc_states, enc_W), enc_b)
-
-            # Gets the encoder weights.
-            encoder_weights = tf.get_collection(
-                tf.GraphKeys.GLOBAL_VARIABLES, scope='encoder')
-
-        # Builds the generator slightly differently.
-        with tf.variable_scope('generator'):
-            attn_vec = tf.transpose(attn_vec, (1, 0, 2))
+        with tf.variable_scope(scope):
+            attn_tensor = tf.transpose(attn_tensor, (1, 0, 2))
+            enc_dim = enc_states.get_shape()[1].value
 
             # Builds the attention component.
             k, v, score_fn, construct_fn = tf.contrib.seq2seq.prepare_attention(
-                attn_vec, 'bahdanau', rnn_size * 2)
+                attn_tensor, 'bahdanau', enc_dim)
 
             train_decoder_fn = tf.contrib.seq2seq.attention_decoder_fn_train(
                 enc_states, k, v, score_fn, construct_fn)
@@ -636,170 +597,351 @@ class QuestionGAN(QuestionGenerator):
             start_idx = tf.ones((tf.shape(self.target_pl)[0], 1),
                                 dtype=tf.int32) * yahoo.START_IDX
             seq_vals = tf.concat([start_idx, self.target_pl], axis=1)
-            seq_vals = tf.nn.embedding_lookup(emb, seq_vals)
+            seq_vals = tf.nn.embedding_lookup(embeddings, seq_vals)
 
             # Builds the RNN decoder training function.
-            cell = tf.contrib.rnn.GRUCell(rnn_size * 2)
+            cell = tf.contrib.rnn.GRUCell(enc_dim)
 
-            x, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
+            gen_sequence, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
                 cell=cell,
                 decoder_fn=train_decoder_fn,
                 inputs=seq_vals,
                 sequence_length=self.target_len_pl)
 
-            output_W = self.get_weight('out_W',
-                                       (rnn_size * 2, self.num_classes))
-            output_b = self.get_weight('out_b',
-                                       (self.num_classes,), init='zero')
+            # Transforms the RNN hidden weights into class predictions.
+            out_W = self.get_weight('out_W', (enc_dim, self.num_classes))
+            out_b = self.get_weight('out_b', (self.num_classes,), init='zero')
+
+            # Creates a function that can be used to get the output.
+            output_fn = lambda x: tf.matmul(x, out_W) + out_b
 
             # Applies the output function time-wise.
-            x = tf.einsum('ijk,kl->ijl', x, output_W)
-            x = tf.nn.bias_add(x, output_b)
+            gen_sequence = tf.einsum('ijk,kl->ijl', gen_sequence, out_W)
+            gen_sequence = tf.nn.bias_add(gen_sequence, out_b)
 
-            # Function for decoding layer on.
-            output_fn = lambda inp: tf.matmul(inp, output_W) + output_b
-
-            # Op for pre-training regularly.
+            # Computes a sequence loss tensor.
             weights = tf.sequence_mask(self.target_len_pl, dtype=tf.float32)
-            self.seq_loss = tf.contrib.seq2seq.sequence_loss(
-                x, self.target_pl, weights)
+            seq_loss = tf.contrib.seq2seq.sequence_loss(
+                gen_sequence, self.target_pl, weights)
 
-            # Gets the weights associated with the generator model.
-            generator_weights = tf.get_collection(
-                tf.GraphKeys.GLOBAL_VARIABLES, scope='generator')
+            generator_variables = self.get_scope_variables(scope)
 
-        # Constructs the SeqGAN discriminator.
-        with tf.variable_scope('discriminator'):
-
-            train_decoder_fn = tf.contrib.seq2seq.simple_decoder_fn_train(
-                enc_states)
-            cell = tf.contrib.rnn.GRUCell(rnn_size * 2)
-            pred_W = self.get_weight('pred_W', (rnn_size * 2, 1))
-
-            # Embeds the original question into the same embedding space.
-            q_emb = tf.nn.embedding_lookup(emb, self.target_pl)
-            real_preds, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
-                cell=cell,
-                decoder_fn=train_decoder_fn,
-                inputs=q_emb,
-                sequence_length=self.target_len_pl)
-            real_pred = tf.reduce_mean(real_preds, axis=1)  # Reduce time axis.
-            real_pred = tf.matmul(real_pred, pred_W)
-
-            # Reuses the discriminator model.
-            tf.get_variable_scope().reuse_variables()
-            embedded = smooth_argmax(x, emb)  # Does the embedding trick.
-
-            # Fixes the shaping issue.
-            new_shape = (tf.shape(x)[0], tf.shape(x)[1], num_embed)
-            embedded = tf.reshape(embedded, new_shape)
-
-            fake_preds, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
-                cell=cell,
-                decoder_fn=train_decoder_fn,
-                inputs=embedded,
-                sequence_length=self.target_len_pl)
-            fake_pred = tf.reduce_mean(fake_preds, axis=1)  # Reduce time axis.
-            fake_pred = tf.matmul(fake_pred, pred_W)
-
-            # Gets the weights associated with the discriminator model.
-            discriminator_weights = tf.get_collection(
-                tf.GraphKeys.GLOBAL_VARIABLES, scope='discriminator')
-
-        gen_loss = tf.nn.sigmoid_cross_entropy_with_logits(
-            labels=tf.ones_like(fake_pred), logits=fake_pred)
-        dis_loss = (tf.nn.sigmoid_cross_entropy_with_logits(
-            labels=tf.zeros_like(fake_pred), logits=fake_pred) +
-                         tf.nn.sigmoid_cross_entropy_with_logits(
-            labels=tf.ones_like(real_pred), logits=real_pred))
-
-        self.gen_loss = tf.reduce_mean(gen_loss)
-        self.dis_loss = tf.reduce_mean(dis_loss)
-        self.gan_loss = self.gen_loss + self.dis_loss
-
-        # Adds encoder weights to be trained by both models.
-        discriminator_weights += encoder_weights
-        # generator_weights += encoder_weights
-
-        tf.summary.scalar('loss/generator', self.gen_loss)
-        tf.summary.scalar('loss/discriminator', self.dis_loss)
-        tf.summary.scalar('loss/sequence', self.seq_loss)
-
-        # Builds the training op.
-        optimizer = tf.train.AdamOptimizer(learning_rate=1e-4)
-
-        with tf.variable_scope('reg_loss'):
-            gen_reg_loss = 0
-            for w in generator_weights:
-                gen_reg_loss += tf.nn.l2_loss(w)
-            gen_reg_loss *= 1e-4
-
-            dis_reg_loss = 0
-            for w in discriminator_weights:
-                dis_reg_loss += tf.nn.l2_loss(w)
-            dis_reg_loss *= 1e-4
-
-        tf.summary.scalar('loss/generator_regularization', gen_reg_loss)
-        tf.summary.scalar('loss/discriminator_regularization', dis_reg_loss)
-
-        gvs = optimizer.compute_gradients(self.seq_loss +
-                                          gen_reg_loss +
-                                          dis_reg_loss,
-                                          generator_weights + encoder_weights)
-        seq_grads = [(tf.clip_by_value(grad, -1., 1.), var)
-                     for grad, var in gvs if grad is not None]
-        self.seq_op = optimizer.apply_gradients(seq_grads)
-
-        # Computes discriminator gradients.
-        gvs = optimizer.compute_gradients(self.dis_loss + dis_reg_loss,
-                                          discriminator_weights)
-        dis_grads = [(tf.clip_by_value(grad, -1., 1.), var)
-                     for grad, var in gvs]
-        dis_op = optimizer.apply_gradients(dis_grads)
-
-        # Computes generator gradients.
-        gvs = optimizer.compute_gradients(self.gen_loss + gen_reg_loss,
-                                          generator_weights)
-        gen_grads = [(tf.clip_by_value(grad, -1., 1.), var)
-                     for grad, var in gvs]
-        gen_op = optimizer.apply_gradients(gen_grads)
-
-        self.gan_train_op = tf.group(gen_op, dis_op)  # Combine ops for generator.
-
-        # Reuse the variable scope from earlier.
-        with tf.variable_scope('generator'):
+            # Reuses the variables from the generator for the inferrer.
             tf.get_variable_scope().reuse_variables()
 
-            # Builds the attention decoder.
-            infer_decoder_fn = tf.contrib.seq2seq.attention_decoder_fn_inference(
+            # Builds the inferrence functions.
+            infer_fn = tf.contrib.seq2seq.attention_decoder_fn_inference(
                 output_fn=output_fn,
                 encoder_state=enc_states,
                 attention_keys=k,
                 attention_values=v,
                 attention_score_fn=score_fn,
                 attention_construct_fn=construct_fn,
-                embeddings=emb,
+                embeddings=embeddings,
                 start_of_sequence_id=yahoo.START_IDX,
                 end_of_sequence_id=yahoo.END_IDX,
                 maximum_length=self.output_len,
                 num_decoder_symbols=self.num_classes)
 
-            self.inferred_question, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
+            inferred_question, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
                 cell=cell,
-                decoder_fn=infer_decoder_fn)
+                decoder_fn=infer_fn)
 
-        # Creates the log directory.
-        if self.logdir is None:
-            self.logdir = tempfile.mkdtemp()
-            sys.stdout.write('logdir: "%s"\n' % self.logdir)
-        summary_writer = tf.summary.FileWriter(self.logdir, self._sess.graph)
-        self.summary_writer = summary_writer
-        self.summary_op = tf.summary.merge_all()
+        return gen_sequence, generator_variables, inferred_question, seq_loss
+
+    def build_discriminator(self, sequence, real_sequence, attn_tensor,
+                            embeddings, enc_states, reuse=False,
+                            scope='discriminator'):
+        """Builds model to descriminate between real and fake `sequence`.
+
+        Args:
+            sequence: 2D Tensor with shape (batch_size, num_timesteps),
+                the real or fake sequence.
+            real_sequence: 2D Tensor with shape (batch_size, num_timesteps),
+                the real or fake sequence.
+            attn_tensor: 3D Tensor with shape (batch_size, timesteps, features),
+                the vector to pay attention to.
+            embeddings: 2D Tensor with shape (num_classes, num_emb_states),
+                the embedding vectors for the words (trained using word2vec).
+            enc_states: 2D Tensor with shape (batch_size, num_outputs),
+                the initial state for the seq2seq decoder.
+            reuse: bool, whether or not to reuse scope variables.
+            scope: str, the discriminator variable scope.
+
+        Returns:
+            predictions: 2D Tensor with shape (batch_size, num_timesteps)
+                where each value ranges from 0 to 1, 0 being fake and 1 being
+                real.
+            discriminator_variables: list of trainable model variables.
+        """
+
+        with tf.variable_scope(scope):
+            if reuse:
+                tf.get_variable_scope().reuse_variables()
+
+            attn_tensor = tf.transpose(attn_tensor, (1, 0, 2))
+            enc_dim = enc_states.get_shape()[1].value
+
+            # Builds the attention component.
+            k, v, score_fn, construct_fn = tf.contrib.seq2seq.prepare_attention(
+                attn_tensor, 'bahdanau', enc_dim)
+
+            train_decoder_fn = tf.contrib.seq2seq.attention_decoder_fn_train(
+                enc_states, k, v, score_fn, construct_fn)
+
+            # Creates the cell.
+            cell = tf.contrib.rnn.GRUCell(enc_dim)
+
+            # Concatenates with start token and embeds into the embedding space.
+            start_idx = tf.ones((tf.shape(real_sequence)[0], 1),
+                                dtype=tf.int32) * yahoo.START_IDX
+            seq_input = tf.concat([start_idx, real_sequence], axis=1)
+            q_emb = tf.nn.embedding_lookup(embeddings, seq_input)
+
+            rnn_states, _, _ = tf.contrib.seq2seq.dynamic_rnn_decoder(
+                cell=cell,
+                decoder_fn=train_decoder_fn,
+                inputs=q_emb,
+                sequence_length=self.target_len_pl)
+
+            def _add_linear_layer(input_var, output_dim, idx):
+                input_dim = input_var.get_shape()[2].value
+                W = self.get_weight('W_%d' % idx, (input_dim, output_dim))
+                b = self.get_weight('b_%d' % idx, (output_dim,), init='zero')
+                o = tf.nn.bias_add(tf.einsum('ijk,kl->ijl', input_var, W), b)
+                return o
+
+            # At each timestep, given the current decoder RNN state and the
+            # sequence value, predict if the provided sequence token is
+            # realistic or unrealistic.
+            seq_embed = tf.nn.embedding_lookup(embeddings, sequence)
+            preds_concat = tf.concat([rnn_states, seq_embed], axis=2)
+            predictions = _add_linear_layer(preds_concat, 256, idx=1)
+            predictions = _add_linear_layer(preds_concat, 1, idx=2)
+            predictions = tf.squeeze(predictions, axis=2)
+
+            predictions = tf.sigmoid(predictions)
+
+            discriminator_variables = self.get_scope_variables(scope)
+
+        return predictions, discriminator_variables
+
+    def build_encoder(self, sequence, embeddings, num_enc_states=512,
+                      rnn_size=256, num_rnns=2, scope='encoder'):
+        """Builds the model that encodes the input sequence.
+
+        Args:
+            sequence: 2D Tensor with shape (batch_size, num_timesteps),
+                the sequence to encode (as integers).
+            embeddings: 2D Tensor with shape (num_classes, num_emb_states),
+                the embedding vectors for the words (trained using word2vec).
+            num_enc_states: int, number of encoder states.
+            rnn_size: int, number of RNN hidden dimensions.
+            num_rnns: int, number of encoder RNNs.
+            scope: str, the encoder variable scope.
+
+        Returns:
+            attn_tensor: 3D Tensor with shape (batch_size, num_timesteps,
+                num_attn_classes), the tensor to pay attention to.
+            enc_states: 2D Tensor with shape (batch_size, num_enc_states),
+                the RNN encoded states.
+            enc_variables: list of trainable tensors.
+        """
+
+        with tf.variable_scope(scope):
+            cells = [tf.contrib.rnn.GRUCell(512) for _ in range(num_rnns)]
+            cell = tf.contrib.rnn.MultiRNNCell(cells)
+            cell = tf.contrib.rnn.FusedRNNCellAdaptor(
+                cell, use_dynamic_rnn=True)
+
+            # Converts input to one-hot encoding.
+            sequence = tf.nn.embedding_lookup(embeddings, sequence)
+
+            # Applies the forward RNN pass.
+            with tf.variable_scope('forward'):
+                attn_tensor_fw, enc_states_fw = cell(
+                    tf.transpose(sequence, (1, 0, 2)),
+                    dtype=tf.float32,
+                    sequence_length=self.input_len_pl)
+
+            # Applies the backward RNN pass.
+            with tf.variable_scope('backward'):
+                cell_bw = tf.contrib.rnn.TimeReversedFusedRNN(cell)
+                attn_tensor_bw, enc_states_bw = cell_bw(
+                    tf.transpose(sequence, (1, 0, 2)),
+                    dtype=tf.float32,
+                    sequence_length=self.input_len_pl)
+
+            # Concatenates forward and backward passes of attention vectors.
+            attn_tensor = tf.concat([attn_tensor_fw, attn_tensor_bw], axis=-1)
+
+            # Concatenates encoder states to get a single state.
+            enc_states = [tf.concat([f, b], axis=-1)
+                          for f, b in zip(enc_states_fw, enc_states_bw)]
+            enc_states = tf.concat(enc_states, axis=-1)
+
+            # Applies transformation to the attention tensor.
+            attn_dim = attn_tensor.get_shape()[2].value
+            attn_W = self.get_weight('attn_W', (attn_dim, num_enc_states))
+            attn_b = self.get_weight('enc_b', (num_enc_states,), init='zero')
+            attn_tensor = tf.einsum('ijk,kl->ijl', attn_tensor, attn_W)
+            attn_tensor = tf.nn.bias_add(attn_tensor, attn_b)
+
+            # Applies transformation to get encoder vector.
+            output_dims = enc_states.get_shape()[1].value
+            enc_W = self.get_weight('enc_W', (output_dims, num_enc_states))
+            enc_b = self.get_weight('enc_b', (num_enc_states,), init='zero')
+            enc_states = tf.nn.bias_add(tf.matmul(enc_states, enc_W), enc_b)
+
+            enc_variables = self.get_scope_variables(scope)
+
+        return attn_tensor, enc_states, enc_variables
+
+    def build(self, discriminator_phase=None, num_embed=500):
+        """Builds the model, initializing weights.
+
+        Args:
+            discriminator_phase: int (default: None), how often to alternate
+                between training the discriminator and generator. If None, they
+                are trained simultaneously.
+            num_embed: int, number of embedding dimensions to use.
+        """
+
+        if hasattr(self, '_built') and self._built:
+            return
 
         # Creates the time variable on the CPU.
         with tf.device('/cpu:0'):
-            time = tf.Variable(0, dtype=tf.int64, name='time')
-            self.time_op = time.assign(time + 1)
+            self.time = tf.Variable(1, dtype=tf.int64, name='time')
+            self.time_op = self.time.assign(self.time + 1)
+
+        x = self.input_pl
+
+        embeddings = self.get_weight('embed', (self.num_classes, num_embed),
+                              init='glorot', weight_val=self.embeddings,
+                              trainable=False)
+
+        # Builds the encoder model for the generator to use.
+        attn_tensor, enc_states, enc_variables = self.build_encoder(
+            self.input_pl, embeddings)
+
+        # Builds the generator around the encoded answer.
+        gen_sequence, gen_variables, inferred, seq_loss = self.build_generator(
+            attn_tensor, embeddings, enc_states)
+
+        # Saves the inferred question to use later.
+        self.inferred_question = inferred
+
+        def multinomial_3d(x):
+            """Samples from a multinomial distribution from 3D Tensor."""
+            a, b = tf.shape(x)[0], tf.shape(x)[1]
+            x = tf.reshape(x, (a * b, -1))
+            m = tf.multinomial(x, 1)
+            return tf.reshape(m, (a, b))
+
+        class_preds = tf.cast(tf.argmax(gen_sequence, axis=-1), tf.int32)
+        # class_preds = multinomial_3d(gen_sequence)
+
+        # Builds the discriminator around the real sequence.
+        real_preds, dis_variables = self.build_discriminator(
+            self.target_pl, self.target_pl, attn_tensor,
+            embeddings, enc_states)
+
+        # Builds the discriminator around the generated sequence.
+        fake_preds, _ = self.build_discriminator(
+            class_preds, self.target_pl, attn_tensor,
+            embeddings, enc_states, reuse=True)
+
+        # Computes losses for a normal GAN.
+        gen_loss = -tf.reduce_mean(fake_preds)
+        dis_loss = tf.reduce_mean(fake_preds) - tf.reduce_mean(real_preds)
+
+        # Computes accuracies.
+        self.gen_acc = tf.reduce_mean(fake_preds)
+        self.dis_acc = tf.reduce_mean(real_preds)
+        tf.summary.scalar('accuracy/generator', self.gen_acc)
+        tf.summary.scalar('accuracy/discriminator', self.dis_acc)
+
+        # Computes policy gradients using the generator loss.
+        # pred_good = tf.where(tf.greater(fake_preds, 0.5),
+        #                      tf.ones_like(fake_preds),
+        #                      -tf.ones_like(fake_preds))
+        policy = tf.expand_dims(1 - 2 * fake_preds, axis=-1)
+        # generator_grad_loss = policy * gen_sequence
+        ohe = tf.one_hot(class_preds, self.num_classes)  # Penalize chosen one.
+        generator_grad_loss = policy * ohe
+
+        self.gen_loss = gen_loss
+        self.dis_loss = dis_loss
+        self.gan_loss = self.gen_loss + self.dis_loss
+        self.seq_loss = tf.reduce_mean(seq_loss)
+
+        # Adds encoder weights to be trained.
+        dis_variables += enc_variables
+        # gen_variables += gen_enc_variables
+
+        # Adds generator and discriminator loss summaries.
+        tf.summary.scalar('loss/generator', self.gen_loss)
+        tf.summary.scalar('loss/discriminator', self.dis_loss)
+        tf.summary.scalar('loss/sequence', self.seq_loss)
+
+        # Creates separate generator and discriminator optimizers.
+        generator_opt = tf.train.AdamOptimizer(learning_rate=1e-4)
+        discriminator_opt = tf.train.AdamOptimizer(learning_rate=3e-4)
+
+        # Adds regularization loss.
+        with tf.variable_scope('reg_loss'):
+            gen_reg_loss = 0
+            for w in gen_variables:
+                gen_reg_loss += tf.nn.l2_loss(w)
+            gen_reg_loss *= 1e-4
+
+            dis_reg_loss = 0
+            for w in dis_variables:
+                dis_reg_loss += tf.nn.l2_loss(w)
+            dis_reg_loss *= 1e-4
+
+        # Adds regularization loss summaries.
+        tf.summary.scalar('loss/regularization/generator', gen_reg_loss)
+        tf.summary.scalar('loss/regularization/discriminator', dis_reg_loss)
+
+        # Computes discriminator gradients the normal way.
+        dis_op = discriminator_opt.minimize(
+            self.dis_loss + dis_reg_loss, var_list=dis_variables)
+
+        # Computes generator gradients.
+        gvs = generator_opt.compute_gradients(
+            gen_sequence, gen_variables, grad_loss=generator_grad_loss)
+        gen_op = generator_opt.apply_gradients(gvs)
+
+        # Adds in the regularization loss (normal minimization).
+        gen_op = tf.group(gen_op, generator_opt.minimize(gen_reg_loss))
+
+        # Combines the two ops.
+        if discriminator_phase is None:
+            self.gan_train_op = tf.group(gen_op, dis_op)
+        else:
+            tick = tf.mod(self.time, discriminator_phase)
+            self.gan_train_op = tf.cond(
+                tf.equal(tick, 0),
+                lambda: gen_op,
+                lambda: dis_op)
+
+        seq_minimize = discriminator_opt.minimize(
+            self.seq_loss, var_list=gen_variables)
+        self.seq_op = tf.group(seq_minimize, dis_op)  # Pretrain discriminator.
+
+        # Adds the seq op to the gan training op.
+        # self.gan_train_op = tf.group(self.gan_train_op, self.seq_op)
+        # self.gan_train_op = self.seq_op
+
+        # Creates the log directory and saving objects.
+        if self.logdir is None:
+            self.logdir = tempfile.mkdtemp()
+            sys.stdout.write('logdir: "%s"\n' % self.logdir)
+        self.summary_writer = tf.summary.FileWriter(
+            self.logdir, self._sess.graph)
+        self.summary_op = tf.summary.merge_all()
 
         self._saver = tf.train.Saver()
         self._sess.run(tf.global_variables_initializer())
@@ -816,7 +958,8 @@ if __name__ == '__main__':
                               yahoo.ANSWER_MAXLEN,
                               yahoo.QUESTION_MAXLEN,
                               yahoo.NUM_TOKENS,
-                              logdir=LOGDIR)
+                              logdir=LOGDIR,
+                              only_cpu=True)
     model.load(ignore_missing=True)
 
     query = raw_input('Enter some text [None to end]: ')

@@ -4,6 +4,8 @@ from __future__ import absolute_import
 from __future__ import print_function
 
 import sys
+import os
+import datetime
 
 import numpy as np
 
@@ -17,15 +19,34 @@ from keras.losses import cosine_proximity
 import keras.backend as K
 
 from liveqa.nn.utils import RecurrentAttention
+from liveqa import yahoo
+
+BASE = os.path.dirname(os.path.realpath(__file__))
+SAVE_LOC = os.path.join(BASE, 'ranking_model.h5')
 
 
-def build_model(vocab_size, num_embedding_dims, question_len, answer_len):
+def rank_candidate_answers(model, question, answers):
+    """Ranks answers by relevance to the question.
+
+    Args:
+        model: the Keras model (defined in `build_model`).
+        question: str, the question string.
+        ansewrs: list of str, the answer strings.
+
+    Returns:
+        the answers, sorted by decreasing relevance (i.e. first answer is the
+            most relevant answer).
+    """
+
+    raise NotImplementedError()
+
+
+def build_model(embeddings, question_len, answer_len):
     """Builds the question-answer similarity model.
 
     Args:
-        vocab_size: int, number of symbols in the vocabulary.
-        num_embedding_dims: int, number of dimensions to embed the question
-            and answer (corresponds to pre-trained word2vec embeddings).
+        embeddings: numpy array with size (vocab_size, num_embedding_dims),
+            the initial embeddings to use for the model.
         question_len: int, maximum length of a question.
         answer_len: int, maximum length of an answer.
 
@@ -33,16 +54,18 @@ def build_model(vocab_size, num_embedding_dims, question_len, answer_len):
         a trainable keras model.
     """
 
-    RNN_DIMS = 256
+    RNN_DIMS = 64
 
     question_var = Input(shape=(question_len,), dtype='int32')
     answer_var = Input(shape=(answer_len,), dtype='int32')
     neg_answer_var = Input(shape=(answer_len,), dtype='int32')
 
     # Applies the context representation layer.
-    q = Embedding(vocab_size, num_embedding_dims)(question_var)
+    vocab_size, num_embedding_dims = embeddings.shape
+    q_emb = Embedding(vocab_size, num_embedding_dims, weights=[embeddings])
+    q = q_emb(question_var)
     q_context = Bidirectional(LSTM(RNN_DIMS, return_sequences=True))(q)
-    a_emb = Embedding(vocab_size, num_embedding_dims)
+    a_emb = Embedding(vocab_size, num_embedding_dims, weights=[embeddings])
     a = a_emb(answer_var)
     a_lstm = Bidirectional(LSTM(RNN_DIMS, return_sequences=True))
     a_context = a_lstm(a)
@@ -72,45 +95,54 @@ def build_model(vocab_size, num_embedding_dims, question_len, answer_len):
         n = K.l2_normalize(n, axis=-1)
         qa = -K.mean(q * a, axis=-1, keepdims=True)
         qn = -K.mean(q * n, axis=-1, keepdims=True)
-        return qa - qn
+        return qn - qa
     sim_layer = Lambda(sim_diff_func)
     sim_diff = sim_layer([q_agg, a_agg, n_agg])
 
-    def similarity_loss(y_true, _):
-        return K.maximum(0., 0.2 - y_true)
+    def similarity_loss(_, y_pred):
+        return K.maximum(0., 0.2 + y_pred)
 
     # The model is trained to maximize similarity.
     model = Model(inputs=[question_var, answer_var, neg_answer_var],
                   outputs=[sim_diff])
-    model.compile(optimizer='adam', loss='mse')
+    model.compile(optimizer='adam', loss=similarity_loss)
 
     return model
 
 
 if __name__ == '__main__':  # Tests the model on some dummy data.
-    VOCAB_SIZE = 200
-    NUM_EMBED = 500
-    QUESTION_LEN, ANSWER_LEN = 50, 100
     BATCH_SIZE = 32
+    NB_EPOCH = 100
+    BATCHES_PER_EPOCH = 100
 
-    model = build_model(VOCAB_SIZE, NUM_EMBED, QUESTION_LEN, ANSWER_LEN)
+    embeddings = yahoo.get_word_embeddings()
+    model = build_model(embeddings, yahoo.QUESTION_MAXLEN, yahoo.ANSWER_MAXLEN)
 
-    def _iterate_questions():
-        while True:
-            question = np.random.randint(
-                0, VOCAB_SIZE, size=(BATCH_SIZE, QUESTION_LEN), dtype='int32')
-            answer = np.random.randint(
-                0, VOCAB_SIZE, size=(BATCH_SIZE, ANSWER_LEN), dtype='int32')
-            yield question, answer
+    if os.path.exists(SAVE_LOC):
+        model.load_weights(SAVE_LOC)
 
-    iterator = _iterate_questions()
-    q_1, a_1 = iterator.next()
+    # Gets the data iterator.
+    data_iter = yahoo.iterate_answer_to_question(BATCH_SIZE, False)
+    sample_iter = yahoo.iterate_answer_to_question(1, True)
 
-    for i in xrange(5):
-        q_2, a_2 = iterator.next()
-        t = np.ones(shape=(BATCH_SIZE,))
-        model.train_on_batch([q_1, a_1, a_2], [t])
-        model.train_on_batch([q_2, a_2, a_1], [t])
-        q_1, a_1 = q_2, a_2  # Moves new batch into the old batch.
-        sys.stdout.write('\rprocessed %d' % i)
-        sys.stdout.flush()
+    q_old, a_old, _, _ = data_iter.next()
+    target = np.ones(shape=(BATCH_SIZE,))
+
+    total_start_time = datetime.datetime.now()
+    for epoch_idx in xrange(1, NB_EPOCH + 1):
+        start_time = datetime.datetime.now()
+        for batch_idx in xrange(1, BATCHES_PER_EPOCH + 1):
+            q_new, a_new, _, _ = data_iter.next()
+            model.train_on_batch([q_old, a_old, a_new], [target])
+            loss = model.train_on_batch([q_new, a_new, a_old], [target])
+            q_old, a_old = q_new, a_new
+            sys.stdout.write('\repoch %d -- batch %d -- loss = %.3f        '
+                             % (epoch_idx, batch_idx, loss))
+            sys.stdout.flush()
+
+        time_passed = (datetime.datetime.now() - start_time).total_seconds()
+        total_time_passed = (datetime.datetime.now()
+                             - total_start_time).total_seconds()
+
+        # Saves the current model weights.
+        model.save_weights(SAVE_LOC)
