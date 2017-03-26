@@ -25,7 +25,7 @@ import numpy as np
 import logging
 
 # Constants.
-QUESTION_MAXLEN = 50
+QUESTION_MAXLEN = 20
 ANSWER_MAXLEN = 100
 DICT_SIZE = 50000  # Maximum number of words to include in the corpus.
 DATA_ENV_NAME = 'YAHOO_DATA'  # Directory containing the Yahoo data, unzipped.

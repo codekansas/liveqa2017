@@ -102,7 +102,7 @@ def main(_):
             s.append('epoch %d / %d, seen %d' %
                      (epoch_idx, NB_EPOCH,
                       epoch_idx * BATCH_SIZE * BATCHES_PER_EPOCH))
-            s.append('%d (%d) seconds' % (int(time_passed), total_time_passed))
+            s.append('%d (%d) seconds' % (time_passed, total_time_passed))
             s.append('answer: "%s"' % yahoo.detokenize(asamples[0], refs[0],
                                                        show_missing=True))
             s.append('target: "%s"' % yahoo.detokenize(qsamples[0], refs[0],
