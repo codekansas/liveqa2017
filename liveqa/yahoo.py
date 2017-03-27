@@ -18,6 +18,7 @@ import six
 import sys
 import re
 import xml.etree.cElementTree as ET
+import warnings
 
 from collections import Counter
 
@@ -38,9 +39,9 @@ DICTIONARY_FILE = os.path.join(BASE, 'data', 'dictionary_dict.pkl')
 EMBEDDINGS_FILE = os.path.join(BASE, 'data', 'word_embeddings.h5')
 
 if not os.path.exists(DATA_PATH):
-    raise RuntimeError('File not found: "%s". To create it from the existing '
-                       'files, run:  cat FullOct2007.xml.part1 '
-                       'FullOct2007.xml.part2 > FullOct2007.xml' % DATA_PATH)
+    warnings.warn('File not found: "%s". To create it from the existing '
+                  'files, run:  cat FullOct2007.xml.part1 '
+                  'FullOct2007.xml.part2 > FullOct2007.xml' % DATA_PATH)
 
 
 def word_tokenize(text):
