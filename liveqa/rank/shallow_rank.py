@@ -20,8 +20,6 @@ from __future__ import print_function
 from gensim import models, corpora, similarities
 import numpy as np
 
-import faiss
-
 from liveqa import yahoo
 
 import logging
