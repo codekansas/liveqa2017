@@ -11,13 +11,15 @@ import logging
 
 BASE = os.path.dirname(os.path.realpath(__file__))
 INDEX_DIRECTORY = os.path.join(BASE, 'index/')
+STOPWORDS_FILE = os.path.join(BASE, 'stopwords.txt')
 
 
 class Indexing(object):
-    def __init__(self, directory=INDEX_DIRECTORY):
+    def __init__(self, mode='read', directory=INDEX_DIRECTORY):
         """Creates an Indexing object to communicate with Woosh.
 
         Args:
+            mode: str (default: "read"), "read" or "write" (the mode to use).
             directory: str, where to index files (defaults to INDEX_DIRECTORY).
         """
 
@@ -33,8 +35,28 @@ class Indexing(object):
         self.directory = directory
         self.isWriteModeOn = False
         self.isReadModeOn = False
-        self.turnOnWriteMode()
-        # self.turnOnReadMode()
+
+        # Loads stopwords from the associated file.
+        with open(STOPWORDS_FILE, 'r') as f:
+            self.stoplist = set(f.read().strip().split())
+
+        mode = mode.lower()
+        if mode == 'write':
+            self.turnOnWriteMode()
+        elif mode == 'read':
+            self.turnOnReadMode()
+
+            # Initializes the parsers.
+            self.question_parser = QueryParser('ba',
+                                               schema=self.ix.schema,
+                                               group=syntax.OrGroup)
+            self.answer_parser = QueryParser('title',
+                                             schema=self.ix.schema,
+                                             group=syntax.OrGroup)
+            self.searcher = self.ix.searcher()
+        else:
+            raise ValueError('Invalid mode: "%s" (should be "read" or '
+                             '"write").' % mode)
 
     def indexing(self, subject, content, bestAnswer):
         # title = subject
@@ -96,7 +118,22 @@ class Indexing(object):
 
         return text
 
-    def get_top_n_questions(self, query, limit=10):
+    def clean_query(self, text):
+        """Does pre-processing on a query.
+
+        Args:
+            text: the query text.
+
+        Returns:
+            the cleaned query text as a string.
+        """
+
+        tokens = re.findall('[\w\d\']+\'?[\w\d\']+', text)
+        query = ' '.join(t for t in tokens if t not in self.stoplist)
+
+        return query
+
+    def get_top_n_questions(self, query, limit=500):
         """Returns the top questions related to a given query.
 
         Args:
@@ -107,23 +144,20 @@ class Indexing(object):
             list of strings, the top results for the given query.
         """
 
+        query = self.clean_query(query)
         logging.info('query: %s', query)
         # self.query = MultifieldParser(['title', 'body', 'ba'],
         #                               schema=self.ix.schema,
         #                               group=syntax.OrGroup).parse(query)
-        self.query = QueryParser('body',
-                                 schema=self.ix.schema,
-                                 group=syntax.OrGroup).parse(query)
-
-        searcher = self.ix.searcher()
-        results = searcher.search(self.query, limit=limit)
+        query = self.question_parser.parse(query)
+        results = self.searcher.search(query, limit=limit)
 
         # Cleans the retrieved results.
         results = [self.clean(result.get('title')) for result in results]
 
         return results
 
-    def get_top_n_answers(self, query, limit=100):
+    def get_top_n_answers(self, query, limit=500):
         """Returns the top results for a given query.
 
         Args:
@@ -134,13 +168,10 @@ class Indexing(object):
             list of strings, the top results for the given query.
         """
 
+        query = self.clean_query(query)
         logging.info('query: %s', query)
-        self.query = QueryParser('title',
-                                 schema=self.ix.schema,
-                                 group=syntax.OrGroup).parse(query)
-
-        searcher = self.ix.searcher()
-        results = searcher.search(self.query, limit=limit)
+        query = self.answer_parser.parse(query)
+        results = self.searcher.search(query, limit=limit)
 
         # Cleans the provided results.
         results = [self.clean(result.get('ba')) for result in results]

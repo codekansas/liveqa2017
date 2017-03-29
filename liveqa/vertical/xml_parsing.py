@@ -31,7 +31,7 @@ READ_MODE = True
 
 class XmlParseHandler(xml.sax.ContentHandler):
 
-    def __init__(self, max_docs=MAX_DOCS):
+    def __init__(self, index_mode='write', max_docs=MAX_DOCS):
         """Creates an XML parse handler.
 
         Args:
@@ -42,7 +42,7 @@ class XmlParseHandler(xml.sax.ContentHandler):
         self.subject = ''
         self.content = ''
         self.bestAnswer = ''
-        self.indexing = Indexing()
+        self.indexing = Indexing(mode=index_mode)
         self.max_docs = max_docs
         self.i = 0
 
@@ -83,11 +83,8 @@ if (__name__ == '__main__'):
     parser.setFeature(xml.sax.handler.feature_namespaces, 0)
 
     # Overrides the default ContextHandler.
-    handler = XmlParseHandler()
+    handler = XmlParseHandler(index_mode='read' if READ_MODE else 'write')
     parser.setContentHandler(handler)
-
-    if READ_MODE:
-        handler.indexing.turnOnReadMode()
 
     if handler.indexing.isWriteModeOn:
         x = raw_input('About to index Yahoo L6 data. Proceed? [y/N] ')
@@ -104,11 +101,11 @@ if (__name__ == '__main__'):
         while query:
 
             # Gets candidate answers.
-            candidates = handler.indexing.get_top_n_answers(query, limit=10)
+            candidates = handler.indexing.get_top_n_answers(query, limit=100)
             answers = ranker.get_candidates(query, candidates, nc=10)
 
             # Gets candidate questions.
-            candidates = handler.indexing.get_top_n_questions(query, limit=10)
+            candidates = handler.indexing.get_top_n_questions(query, limit=100)
             questions = ranker.get_candidates(query, candidates, nc=10)
 
             print('Top %d Answers, sorted by relevance:' % len(answers))

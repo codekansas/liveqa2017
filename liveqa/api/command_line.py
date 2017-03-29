@@ -13,22 +13,22 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 
 import argparse
-from liveqa.api import lsi_api
+from liveqa.api import get_question, get_answer
 
 parser = argparse.ArgumentParser(
     description='Command-line utility for the LiveQA API.',
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('-m', '--mode',
-                    default='question',
+                    default='answer',
                     choices=['question', 'answer'],
                     help='The mode to use.')
 args = parser.parse_args()
 
 
 if args.mode.lower() == 'question':
-    api = lsi_api.get_question
+    api = get_question
 elif args.mode.lower() == 'answer':
-    api = lsi_api.get_answer
+    api = get_answer
 else:
     raise ValueError('Invalid mode: "%s".' % args.mode)
 

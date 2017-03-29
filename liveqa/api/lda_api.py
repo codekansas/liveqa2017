@@ -7,11 +7,13 @@ To experiment with the command-line utility, use:
     python -m liveqa.api.command_line
 
 To use the get_question and get_answer methods, use:
-    from api import get_question, get_answer
+    from liveqa.api import get_question, get_answer
+
+This is also a useful reference for future APIs.
 """
 
-from __future__ import division
 from __future__ import absolute_import
+from __future__ import division
 
 import xml.sax
 import random
@@ -20,21 +22,17 @@ from liveqa.rank.shallow_rank import ShallowRank
 from liveqa.vertical.indexing import Indexing
 from liveqa.vertical.xml_parsing import XmlParseHandler
 
+# Imports everything from the API utils.
+from liveqa.api.api_utils import *
+
 import threading
 from Queue import Queue
-from Queue import Empty as QueueEmptyException
 
 import logging
 
 logging.info('By importing the API submodule, you are creating background '
              'processes on different threads, which handle calls to the '
              'ranking components.')
-
-# Defines constants.
-MAX_JOBS = 10  # Maximum number of jobs that can be on the queue at once.
-SHALLOW_LIMIT = 10  # Max number of candidates to pass to shallow ranker.
-MAX_WAIT_TIME = 500  # Maximum number of seconds to wait for a query.
-NUM_THREADS = 1  # Number of background threads to run at once.
 
 # Creates the main events queue that handles inter-thread communication.
 query_queue = Queue(maxsize=MAX_JOBS)
@@ -43,64 +41,15 @@ logging.info('Initializing ShallowRank object...')
 _ranker = ShallowRank()  # This is the LSI ranker.
 
 logging.info('Initializing Whoosh parser...')
-_handler = XmlParseHandler()
-_handler.indexing.turnOnReadMode()  # Only use handler in read mode.
+_handler = XmlParseHandler(index_mode='read')
 
 _parser = xml.sax.make_parser()
 _parser.setFeature(xml.sax.handler.feature_namespaces, 0)
 _parser.setContentHandler(_handler)
 
 
-class QueryJob(object):
-    """Container to hold a query job, which the background threads process."""
-
-    def __init__(self, query, query_type, flag):
-        """Creates a new query job.
-
-        Args:
-            query: str, the query string.
-            query_type: either "question" (if you are requesting similar
-                questions to the provided query) or "answer" (if you are
-                requesting similar answers to the provided query).
-            flag: a threading flag that blocks until the job is completed.
-        """
-
-        query_type = query_type.lower()
-        assert query_type in ['question', 'answer']
-
-        self._query = query
-        self._query_type = query_type
-        self._flag = flag
-        self._response = None
-
-    @property
-    def query(self):
-        return self._query
-
-    @property
-    def query_type(self):
-        return self._query_type
-
-    @property
-    def response(self):
-        if self._response is None:
-            raise ValueError('This query job has not yet been processed.')
-
-        return self._response
-
-    def set_response(self, response):
-        self._response = response
-
-    def set_flag(self):
-        self._flag.set()
-
-
 def process_thread():
-    """Thread that processes queries in the background.
-
-    Args:
-        e: a Threading event that is set once everything is ready to go.
-    """
+    """Thread that processes queries in the background."""
 
     while True:
         query_job = query_queue.get()  # Blocks until a new question appears.
@@ -108,12 +57,10 @@ def process_thread():
         if query_job.query_type == 'question':
             candidates = _handler.indexing.get_top_n_questions(
                 query_job.query, limit=SHALLOW_LIMIT)
-            logging.info('Got top %d candidates', SHALLOW_LIMIT)
-            _handler.indexing.closeIndexing()
             if candidates:
-                # question = _ranker.get_candidates(
-                #     query_job.query, candidates, nc=1)[0]
-                question = random.choice(candidates)
+                question = _ranker.get_candidates(
+                    query_job.query, candidates, nc=1)[0]
+                # question = random.choice(candidates)
                 query_job.set_response(question)
             else:
                 query_job.set_response('No questions found.')
@@ -122,7 +69,6 @@ def process_thread():
         elif query_job.query_type == 'answer':
             candidates = _handler.indexing.get_top_n_answers(
                 query_job.query, limit=SHALLOW_LIMIT)
-            _handler.indexing.closeIndexing()
             if candidates:
                 answers = _ranker.get_candidates(
                     query_job.query, candidates, nc=1)
@@ -136,8 +82,6 @@ def process_thread():
                              % query_job.query_type)
 
 for i in range(NUM_THREADS):
-    flag = threading.Event()
-
     logging.info('Creating processing thread %d' % i)
     t = threading.Thread(name='process_thread_%d' % i,
                          target=process_thread)
@@ -166,7 +110,14 @@ def get_response(text, query_type):
     query_queue.put(query_job)
     flag.wait(timeout=MAX_WAIT_TIME)  # Wait for the job to finish.
 
-    return query_job.response
+    try:
+        response = query_job.response
+        if isinstance(response, (list, tuple)):
+            return str(response[0])
+        else:
+            return str(response)
+    except IOError:
+        return 'The query job timed out.'
 
 
 def get_question(text):

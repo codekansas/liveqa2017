@@ -66,20 +66,57 @@ def rank_candidate_answers(model, question, answers):
     # Tokenizes the answers.
     q_arr, a_arr = [], []
     for answer in answers:
-        q_tok, a_tok, _, _, rev_dict = yahoo.tokenize(
+        q_tok, a_tok, _, _ = yahoo.tokenize(
             question=question,
             answer=answer,
             use_pad=True,
-            include_rev=True)
+            include_rev=False)
+        q_arr.append(q_tok)
         a_arr.append(a_tok)
     q_arr = np.stack(q_arr)
     a_arr = np.stack(a_arr)
 
     # Gets the predictions and ranks them.
-    preds = model.predict([q_arr, a_arr])
+    preds = model.predict([q_arr, a_arr]).flatten()
     a_ranked = [answers[i] for i in np.argsort(preds)][::-1]
 
     return a_ranked
+
+
+def rank_candidate_questions(model, questions, answer):
+    """Ranks questions by relevance to the answer.
+
+    Args:
+        model: the Keras model (defined in `build_model`).
+        questions: list of str, the question strings.
+        ansewr: str, the answer string.
+
+    Returns:
+        the questions, sorted by decreasing relevance (i.e. first question is
+            the most relevant question).
+    """
+
+    # Gets the batch size.
+    b_size = len(questions)
+
+    # Tokenizes the answers.
+    q_arr, a_arr = [], []
+    for question in questions:
+        q_tok, a_tok, _, _ = yahoo.tokenize(
+            question=question,
+            answer=answer,
+            use_pad=True,
+            include_rev=False)
+        q_arr.append(q_tok)
+        a_arr.append(a_tok)
+    q_arr = np.stack(q_arr)
+    a_arr = np.stack(a_arr)
+
+    # Gets the predictions and ranks them.
+    preds = model.predict([q_arr, a_arr]).flatten()
+    q_ranked = [questions[i] for i in np.argsort(preds)][::-1]
+
+    return q_ranked
 
 
 def build_model(embeddings, question_len, answer_len, mode='recurrent'):
@@ -181,9 +218,7 @@ def build_model(embeddings, question_len, answer_len, mode='recurrent'):
     model = Model(inputs=[question_var, answer_var], outputs=[qa_var])
     model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['acc'])
 
-    eval_model = Model(inputs=[question_var, answer_var], outputs=[qa_var])
-
-    return model, eval_model
+    return model
 
 
 def evaluate(model, questions, answers, rev_dict, n_eval=5):
@@ -223,6 +258,27 @@ def evaluate(model, questions, answers, rev_dict, n_eval=5):
     sys.stdout.flush()
 
 
+def get_ready_model():
+    """Returns a fully-built model, ready for evaluation.
+    Raises:
+        IOError, if the model hasn't been trained yet (no existing weights).
+    """
+
+    embeddings = yahoo.get_word_embeddings()
+    model = build_model(embeddings, yahoo.QUESTION_MAXLEN, yahoo.ANSWER_MAXLEN)
+
+    if not os.path.exists(SAVE_LOC):
+        raise IOError('The model weights must exist: None found at "%s".'
+                      % SAVE_LOC)
+
+    model._make_predict_function()
+
+    # Doing this loads the weights for the eval model.
+    model.load_weights(SAVE_LOC)
+
+    return model
+
+
 if __name__ == '__main__':  # Tests the model on some dummy data.
     BATCH_SIZE = 32
     NB_EPOCH = 10000
@@ -230,7 +286,7 @@ if __name__ == '__main__':  # Tests the model on some dummy data.
     N_EVAL = 5
 
     embeddings = yahoo.get_word_embeddings()
-    model, eval_model = build_model(embeddings, yahoo.QUESTION_MAXLEN, yahoo.ANSWER_MAXLEN)
+    model = build_model(embeddings, yahoo.QUESTION_MAXLEN, yahoo.ANSWER_MAXLEN)
 
     if os.path.exists(SAVE_LOC):
         model.load_weights(SAVE_LOC)
@@ -274,4 +330,4 @@ if __name__ == '__main__':  # Tests the model on some dummy data.
 
         # Evaluates the model on some training data.
         q_eval, a_eval, _, _, rev_dict = sample_iter.next()
-        evaluate(eval_model, q_eval, a_eval, rev_dict, n_eval=N_EVAL)
+        evaluate(model, q_eval, a_eval, rev_dict, n_eval=N_EVAL)
