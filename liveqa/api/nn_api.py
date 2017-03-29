@@ -56,7 +56,7 @@ def process_thread():
 
         if query_job.query_type == 'question':
             candidates = _handler.indexing.get_top_n_questions(
-                query_job.quer, limit=SHALLOW_LIMIT)
+                query_job.query, limit=SHALLOW_LIMIT)
             if candidates:
                 question = rank_candidate_questions(
                     _eval_model, candidates, query_job.query)[0]
