@@ -12,6 +12,7 @@ import logging
 BASE = os.path.dirname(os.path.realpath(__file__))
 INDEX_DIRECTORY = os.path.join(BASE, 'index/')
 STOPWORDS_FILE = os.path.join(BASE, 'stopwords.txt')
+BAD_WORDS_FILE = os.path.join(BASE, 'bad-words.txt')
 
 
 class Indexing(object):
@@ -39,6 +40,9 @@ class Indexing(object):
         # Loads stopwords from the associated file.
         with open(STOPWORDS_FILE, 'r') as f:
             self.stoplist = set(f.read().strip().split())
+
+        with open(BAD_WORDS_FILE, 'r') as f:
+            self.bad_words = set(f.read().strip().split())
 
         mode = mode.lower()
         if mode == 'write':
@@ -133,6 +137,22 @@ class Indexing(object):
 
         return query
 
+    def filter(self, texts):
+        """Filters out examples with bad words in them.
+
+        Args:
+            texts: list of strings, the texts to filter.
+
+        Returns:
+            list of strings, the filtered texts.
+        """
+
+        def not_bad(text):
+            return all(x.strip() not in self.bad_words
+                       for x in text.lower().split(' '))
+
+        return [text for text in texts if not_bad(text)]
+
     def get_top_n_questions(self, query, limit=500):
         """Returns the top questions related to a given query.
 
@@ -155,6 +175,9 @@ class Indexing(object):
         # Cleans the retrieved results.
         results = [self.clean(result.get('title')) for result in results]
 
+        # Filters out "bad" answers.
+        results = self.filter(results)
+
         return results
 
     def get_top_n_answers(self, query, limit=500):
@@ -175,5 +198,8 @@ class Indexing(object):
 
         # Cleans the provided results.
         results = [self.clean(result.get('ba')) for result in results]
+
+        # Filters out "bad" answers.
+        results = self.filter(results)
 
         return results
