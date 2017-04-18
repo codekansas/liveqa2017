@@ -52,10 +52,10 @@ def word_tokenize(text):
     elif not isinstance(text, six.string_types):
         text = '' if text is None else text.text
 
-    text = re.sub('\<.+?\>', '', text)
-    text = re.findall('[\w\d\']+|[?\.,!-\*;\"@#$%^&\(\)]+', text.lower())
+    text = re.sub('\<.+?\>', '', text).lower()
+    tokens = re.findall('[a-z]+|[0-9]+|\.\.\.|[?\.,!-\*;\"@#$%^&\(\)\\\/]', text)
 
-    return text
+    return tokens
 
 
 if not os.path.exists(DICTIONARY_FILE):  # Creates the dictionary.
@@ -66,15 +66,18 @@ if not os.path.exists(DICTIONARY_FILE):  # Creates the dictionary.
         for event, elem in parser:
             if elem.tag == 'document':
                 num_docs += 1
-                counter.update(word_tokenize(elem.find('subject')))
-                counter.update(word_tokenize(elem.find('bestanswer')))
+                words = (word_tokenize(elem.find('subject')) +
+                         word_tokenize(elem.find('content')) +
+                         word_tokenize(elem.find('bestanswer')))
+                counter.update(set(words))
+                elem.clear()
 
             if num_docs % 1000 == 0:
                 sys.stdout.write('\rparsed %d docs, %d words'
                                  % (num_docs, len(counter)))
                 sys.stdout.flush()
 
-            if num_docs == 200000:
+            if num_docs == 1000000:
                 break
 
     _DICTIONARY = [w for w, _ in counter.most_common(DICT_SIZE)]
@@ -169,7 +172,7 @@ def detokenize(tokens, rev_dict, argmax=False, show_missing=False):
         elif i in rev_dict:
             return '%s(%d)' % (rev_dict[i], i)
         else:
-            return 'X' if show_missing else ''
+            return 'X(%d)' % i if show_missing else ''
 
     words = [_decode(w) for w in tokens]
     sentence = ' '.join(w for w in words if w)
@@ -195,7 +198,8 @@ def get_word_embeddings(num_dimensions=500,
     else:
         class SentenceGenerator(object):
             def __iter__(self):
-                for i, (question, answer) in enumerate(iterate_qa_pairs(), 1):
+                iterable = itertools.islice(iterate_qa_pairs(), 1000000)
+                for i, (question, answer) in enumerate(iterable, 1):
                     q, a, _, _ = tokenize(question=question, answer=answer,
                                           use_pad=False, include_rev=False)
                     yield [str(w) for w in q]

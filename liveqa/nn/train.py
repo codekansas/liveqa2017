@@ -19,7 +19,7 @@ import tensorflow as tf
 # Defines command line flags.
 tf.app.flags.DEFINE_integer('batch_size', 100,
                             'size of each training minibatch.')
-tf.app.flags.DEFINE_integer('batches_per_epoch', 100,
+tf.app.flags.DEFINE_integer('batches_per_epoch', 1,
                             'number of minibatches per training epoch')
 tf.app.flags.DEFINE_integer('nb_epoch', 30000,  # Goes through all data.
                             'number of epochs to train the model for')
@@ -58,7 +58,7 @@ def main(_):
                                   logdir=LOGDIR)
         model.load(ignore_missing=True)
 
-    raw_input('Press <ENTER> to begin training')
+    # raw_input('Press <ENTER> to begin training')
 
     # Gets the data iterator.
     data_iter = yahoo.iterate_answer_to_question(BATCH_SIZE, False)
@@ -107,7 +107,9 @@ def main(_):
                                                        show_missing=True))
             s.append('target: "%s"' % yahoo.detokenize(qsamples[0], refs[0],
                                                        show_missing=True))
-            s.append('pred: "%s"' % yahoo.detokenize(qpred[0], refs[0], True))
+            s.append('pred: "%s"' % yahoo.detokenize(qpred[0], refs[0],
+                                                     argmax=True,
+                                                     show_missing=True))
             sys.stdout.write(' | '.join(s) + '\n')
 
 
