@@ -82,4 +82,4 @@ def process_thread():
                              % query_job.query_type)
 
 
-get_question, get_answer = build_qa_funcs(process_thresd, query_queue)
+get_question, get_answer = build_qa_funcs(process_thread, query_queue)

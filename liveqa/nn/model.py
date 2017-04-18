@@ -75,7 +75,6 @@ class AttentionCellWrapper2D(tf.contrib.rnn.RNNCell):
     """Basic attention cell wrapper, using 2D attention input.
 
     This isn't really an "attention" mechanism, more like a "peak" mechanism.
-    There were a number of issues
     """
 
     def __init__(self, cell, attn_vec):
@@ -90,9 +89,8 @@ class AttentionCellWrapper2D(tf.contrib.rnn.RNNCell):
 
         with tf.variable_scope(scope or 'attention_cell_wrapper'):
             output, _ = self._cell(inputs, state)
-            output = _linear([output, self._attn_vec],
-                             self.output_size, bias=True)
-            output = tf.tanh(output)
+            att = _linear([output, self._attn_vec], self.output_size, bias=True)
+            output = output * tf.sigmoid(att)
 
         return output, output
 
@@ -143,7 +141,6 @@ class QuestionGenerator(object):
         self._target_len_pl = tf.placeholder(tf.int32, (None,))
 
         self._built = False
-        self._weights = []
 
         self._saver = None
         self._sess = sess
@@ -201,12 +198,17 @@ class QuestionGenerator(object):
         if self._only_cpu:
             on_gpu = False
 
-        with tf.device('/gpu:0' if on_gpu else '/cpu:0'):
-            weight = tf.get_variable(name=name,
-                                     shape=shape,
-                                     initializer=initializer,
-                                     trainable=trainable)
-        self._weights.append(weight)
+        with tf.device('/gpu:0' if on_gpu else '/cpu:0'), tf.variable_scope('val'):
+            try:
+                weight = tf.get_variable(name=name,
+                                         shape=shape,
+                                         initializer=initializer,
+                                         trainable=trainable)
+            except ValueError:
+                tf.get_variable_scope().reuse_variables()
+                weight = tf.get_variable(name=name)
+
+        return weight
 
     def get_scope_variables(self):
         """Returns all the variables in scope.
@@ -520,11 +522,6 @@ class QuestionGenerator(object):
     def input_len(self):
         return self._input_len
 
-    @check_built
-    @property
-    def weights(self):
-        return self._weights
-
 
 class QuestionGAN(QuestionGenerator):
     """Question generator using SeqGAN model."""
@@ -566,65 +563,10 @@ class QuestionGAN(QuestionGenerator):
         self._target_len_pl = tf.placeholder(tf.int32, (None,))
 
         self._built = False
-        self._weights = []
 
         self._saver = None
         self._sess = sess
         self.logdir = logdir
-
-    def get_weight(self, name, shape,
-                   init='glorot',
-                   device='gpu',
-                   weight_val=None,
-                   trainable=True):
-        """Creates a new weight.
-        Args:
-            name: str, the name of the variable.
-            shape: tuple of ints, the shape of the variable.
-            init: str, the type of initialize to use.
-            device: str, 'cpu' or 'gpu'.
-            weight_val: Numpy array to use as the initial weights.
-            trainable: bool, whether or not this weight is trainable.
-        Returns:
-            a trainable TF variable with shape `shape`.
-        """
-
-        if weight_val is None:
-            init = init.lower()
-            if init == 'normal':
-                weight_val = tf.random_normal(shape, stddev=0.05)
-            elif init == 'uniform':
-                weight_val = tf.random_uniform(shape, maxval=0.05)
-            elif init == 'glorot':
-                stddev = np.sqrt(6. / sum(shape))
-                weight_val = tf.random_normal(shape, stddev=stddev)
-            elif init == 'eye':
-                assert all(i == shape[0] for i in shape)
-                weight_val = tf.eye(shape[0])
-            elif init == 'zero':
-                weight_val = tf.zeros(shape)
-            else:
-                raise ValueError('Invalid init: "%s"' % init)
-        else:
-            weight_val = weight_val.astype('float32')
-
-        device = device.lower()
-        if device == 'gpu':
-            on_gpu = True
-        elif device == 'cpu':
-            on_gpu = False
-        else:
-            raise ValueError('Invalid device: "%s"' % device)
-
-        if self._only_cpu:
-            on_gpu = False
-
-        with tf.device('/gpu:0' if on_gpu else '/cpu:0'):
-            weight = tf.Variable(weight_val, name=name, trainable=trainable)
-        self._weights.append(weight)
-
-        return weight
-
 
     def build_generator(self, attn_tensor, embeddings,
                         enc_states, scope='generator'):
@@ -649,7 +591,7 @@ class QuestionGAN(QuestionGenerator):
         """
 
         with tf.variable_scope(scope):
-            attn_tensor = tf.transpose(attn_tensor, (1, 0, 2))
+            # attn_tensor = tf.transpose(attn_tensor, (1, 0, 2))
             enc_dim = enc_states.get_shape()[1].value
             batch_size = tf.shape(self.target_pl)[0]
 
@@ -715,22 +657,17 @@ class QuestionGAN(QuestionGenerator):
 
         return class_scores, generated_sequence, teach_loss, generator_variables
 
-    def build_discriminator(self, sequence, embeddings, enc_states, reuse=False,
-                            num_rnns=3, rnn_dims=128, scope='discriminator'):
+    def build_discriminator(self, sequence, embeddings, attn_tensor, enc_states,
+                            reuse=False, num_rnns=3, rnn_dims=128,
+                            scope='discriminator'):
         """Builds model to descriminate between real and fake `sequence`."""
 
         with tf.variable_scope(scope):
             if reuse:
                 tf.get_variable_scope().reuse_variables()
 
-            sequence = tf.nn.embedding_lookup(embeddings, sequence)
-
-            # cells = [tf.contrib.rnn.GRUCell(rnn_dims) for _ in range(num_rnns)]
-            # cell = tf.contrib.rnn.MultiRNNCell(cells)
-            # cell = tf.contrib.rnn.OutputProjectionWrapper(cell, 1)
-            # cell = tf.contrib.rnn.FusedRNNCellAdaptor(cell, True)
-
             num_enc = enc_states.get_shape()[-1].value
+            sequence = tf.nn.embedding_lookup(embeddings, sequence)
 
             def _add_proj(i, activation=tf.tanh):
                 W = self.get_weight('rnn_proj_%d_W' % i, (num_enc, rnn_dims))
@@ -738,23 +675,42 @@ class QuestionGAN(QuestionGenerator):
                 proj = activation(tf.matmul(enc_states, W) + b)
                 return proj
 
-            # initial_state = tuple(_add_proj(i) for i in range(num_rnns))
-            # sequence = tf.transpose(sequence, (1, 0, 2))
-            # rnn_output, _ = cell(sequence, initial_state=initial_state)
-            # rnn_output = tf.transpose(rnn_output, (1, 0, 2))
-            # preds = tf.sigmoid(rnn_output)
+            # Flattens to a single vector.
+            attn_vec = tf.reduce_max(attn_tensor, axis=1)
+            num_attn = attn_vec.get_shape()[-1].value
 
-            projs = [_add_proj(i) for i in range(yahoo.QUESTION_MAXLEN + 3)]
-            projs = tf.stack(projs, axis=1)[:, :tf.shape(sequence)[1]]
-            a, b = tf.shape(sequence)[0], tf.shape(sequence)[1]
-            x = tf.concat([sequence, projs], axis=-1)
-            num_features = x.get_shape()[-1].value
-            x = tf.reshape(x, (-1, num_features))
-            x = tf.layers.dense(x, 256)
-            x = tf.layers.dense(x, 256)
-            preds = tf.layers.dense(x, 1)
-            preds = tf.reshape(preds, (a, b, 1))
-            preds = tf.sigmoid(preds)
+            def _add_attn(i, activation=tf.tanh):
+                W = self.get_weight('attn_proj_%d_W' % i, (num_attn, rnn_dims))
+                b = self.get_weight('attn_proj_%d_b' % i, (rnn_dims,))
+                proj = activation(tf.matmul(attn_vec, W) + b)
+                return proj
+
+            initial_state = tuple(_add_proj(i) for i in range(num_rnns))
+            attns = tuple(_add_attn(i) for i in range(num_rnns))
+
+            cells = [tf.contrib.rnn.GRUCell(rnn_dims) for _ in range(num_rnns)]
+            cells = [AttentionCellWrapper2D(cell, attn)
+                     for cell, attn in zip(cells, attns)]
+            cell = tf.contrib.rnn.MultiRNNCell(cells)
+            cell = tf.contrib.rnn.OutputProjectionWrapper(cell, 1)
+            cell = tf.contrib.rnn.FusedRNNCellAdaptor(cell, True)
+
+            sequence = tf.transpose(sequence, (1, 0, 2))
+            rnn_output, _ = cell(sequence, initial_state=initial_state)
+            rnn_output = tf.transpose(rnn_output, (1, 0, 2))
+            preds = tf.sigmoid(rnn_output)
+
+            # projs = [_add_proj(i) for i in range(yahoo.QUESTION_MAXLEN + 3)]
+            # projs = tf.stack(projs, axis=1)[:, :tf.shape(sequence)[1]]
+            # a, b = tf.shape(sequence)[0], tf.shape(sequence)[1]
+            # x = tf.concat([sequence, projs], axis=-1)
+            # num_features = x.get_shape()[-1].value
+            # x = tf.reshape(x, (-1, num_features))
+            # x = tf.layers.dense(x, 256)
+            # x = tf.layers.dense(x, 256)
+            # preds = tf.layers.dense(x, 1)
+            # preds = tf.reshape(preds, (a, b, 1))
+            # preds = tf.sigmoid(preds)
 
             discriminator_variables = self.get_scope_variables()
 
@@ -816,6 +772,7 @@ class QuestionGAN(QuestionGenerator):
 
             # Concatenates forward and backward passes of attention vectors.
             attn_tensor = tf.concat([attn_tensor_fw, attn_tensor_bw], axis=-1)
+            attn_tensor = tf.transpose(attn_tensor, (1, 0, 2))
 
             # Concatenates encoder states to get a single state.
             enc_states = [tf.concat([f, b], axis=-1)
@@ -855,19 +812,19 @@ class QuestionGAN(QuestionGenerator):
         """
 
         with tf.variable_scope('loss/discriminator'):
-            discriminator_opt = tf.train.AdamOptimizer(1e-4)
+            discriminator_opt = tf.train.AdamOptimizer(1e-3)
 
-            # eps = 1e-12
-            # r_loss = -tf.reduce_mean(tf.log(r_preds + eps))
-            # f_loss = -tf.reduce_mean(tf.log(1 + eps - g_preds))
-            # dis_loss = r_loss + f_loss
-            dis_loss = tf.reduce_mean(g_preds) - tf.reduce_mean(r_preds)
+            eps = 1e-12
+            r_loss = -tf.reduce_mean(tf.log(r_preds + eps))
+            f_loss = -tf.reduce_mean(tf.log(1 + eps - g_preds))
+            dis_loss = r_loss + f_loss
+            # dis_loss = tf.reduce_mean(g_preds) - tf.reduce_mean(r_preds)
 
             # tf.summary.scalar('real', r_loss)
             # tf.summary.scalar('generated', f_loss)
 
             with tf.variable_scope('regularization'):
-                dis_reg_loss = sum([tf.nn.l2_loss(w) for w in d_weights]) * 1e-4
+                dis_reg_loss = sum([tf.nn.l2_loss(w) for w in d_weights]) * 1e-6
             tf.summary.scalar('regularization', dis_reg_loss)
 
             total_loss = dis_loss + dis_reg_loss
@@ -899,7 +856,7 @@ class QuestionGAN(QuestionGenerator):
 
         with tf.variable_scope('loss/generator'):
             generator_opt = tf.train.AdamOptimizer(1e-3)
-            reward_opt = tf.train.GradientDescentOptimizer(1e-3)
+            reward_opt = tf.train.AdamOptimizer(1e-3)
 
             g_sequence = tf.one_hot(g_sequence, self.num_classes)
             g_preds = tf.clip_by_value(g_preds * g_sequence, 1e-20, 1)
@@ -909,25 +866,47 @@ class QuestionGAN(QuestionGenerator):
             reward = tf.subtract(d_preds, exp_reward_slice)
             mean_reward = tf.reduce_mean(reward)
 
-            exp_reward_loss = tf.reduce_mean(tf.abs(reward))
+            exp_reward_loss = tf.reduce_mean(tf.square(reward))
             with tf.variable_scope('expected_reward_updates'):
                 exp_op = self.get_updates(exp_reward_loss, reward_opt,
                                           [expected_reward])
 
-            reward = tf.expand_dims(tf.cumsum(reward, axis=1, reverse=True), -1)
-            gen_reward = g_preds * reward
-            gen_reward = tf.reduce_mean(gen_reward)
+            self.reward = reward
 
+            # Reward is how much the model improves on each step.
+            # reward_shifted = tf.concat([
+            #     tf.zeros_like(reward[:, :1]), reward[:, :-1]], axis=1)
+            # reward = tf.expand_dims(reward - reward_shifted, -1)
+
+            # Reward depends on all future states.
+            reward = tf.expand_dims(tf.cumsum(reward, axis=1, reverse=True), -1)
+
+            # Reward is just how well the model does at this timestep.
+            # reward = tf.expand_dims(reward, -1)
+
+            gen_reward = g_preds * tf.stop_gradient(reward)
+            gen_reward = tf.reduce_sum(gen_reward)
+
+            # Penalizes out-of-vocab words.
             oov_mask = tf.ones(shape=tf.shape(d_preds), dtype='int32')
             oov_mask *= yahoo.OUT_OF_VOCAB
             oov_pen = g_preds * tf.one_hot(oov_mask, self.num_classes)
             oov_pen = tf.reduce_sum(oov_pen) * 1e3
             tf.summary.scalar('out_of_vocab_penalty', oov_pen)
 
-            gen_loss = oov_pen - gen_reward
+            # Penalizes repeated words.
+            rep_mask = tf.reduce_sum(g_sequence, axis=1) - 1
+            end_idx_mask = tf.ones(shape=tf.shape(d_preds)[:1], dtype='int32')
+            end_idx_mask *= 1000
+            rep_mask -= tf.one_hot(end_idx_mask, self.num_classes)
+            rep_pen = tf.reduce_sum(g_preds, axis=1) * tf.maximum(rep_mask, 0)
+            rep_pen = tf.reduce_sum(rep_pen) * 1e3
+            tf.summary.scalar('repeated_penalty', rep_pen)
+
+            gen_loss = oov_pen + rep_pen - gen_reward
 
             with tf.variable_scope('regularization'):
-                gen_reg_loss = sum([tf.nn.l2_loss(w) for w in g_weights]) * 1e-5
+                gen_reg_loss = sum([tf.nn.l2_loss(w) for w in g_weights]) * 1e-6
             tf.summary.scalar('regularization', gen_reg_loss)
 
             total_loss = gen_loss + gen_reg_loss
@@ -964,7 +943,10 @@ class QuestionGAN(QuestionGenerator):
 
         embeddings = self.get_weight(
             'embed', (self.num_classes, num_embed),
-            init='glorot', weight_val=self.embeddings, trainable=False)
+            init='glorot',
+            weight_val=self.embeddings,
+            device='cpu',
+            trainable=False)
 
         # Builds the generator around the encoded answer.
         attn_tensor, enc_states, enc_variables = self.build_encoder(
@@ -977,10 +959,10 @@ class QuestionGAN(QuestionGenerator):
         attn_tensor, enc_states, enc_variables = self.build_encoder(
             self.input_pl, embeddings, scope='d_encoder')
         r_preds, d_weights = self.build_discriminator(
-            self.target_pl, embeddings, enc_states)
+            self.target_pl, embeddings, attn_tensor, enc_states)
         d_weights += enc_variables
         g_preds, _ = self.build_discriminator(
-            g_seq, embeddings, enc_states, reuse=True)
+            g_seq, embeddings, attn_tensor, enc_states, reuse=True)
 
         # For sampling later.
         self.r_preds = r_preds
@@ -993,15 +975,21 @@ class QuestionGAN(QuestionGenerator):
         self.gen_acc = tf.reduce_mean(g_preds)
         self.dis_acc = tf.reduce_mean(r_preds)
 
+        tf.summary.scalar('accuracy/generator', self.gen_acc)
+        tf.summary.scalar('accuracy/discriminator', self.dis_acc)
+
         # Computes the weight updates for the discriminator and generator.
         dis_op = self.get_discriminator_op(r_preds, g_preds, d_weights)
         gen_op = self.get_generator_op(g_seq, g_preds, g_classes, g_weights)
 
-        teach_lr = 1000. / (1000. + tf.cast(self.time, 'float32'))
-        teach_lr *= 1e-3
+        # teach_lr = 100. / (100. + tf.cast(self.time, 'float32'))
+        # teach_lr *= 1e-3
+        teach_lr = 1e-3
         teach_opt = tf.train.AdamOptimizer(teach_lr)
         with tf.variable_scope('teacher_update'):
             teach_op = self.get_updates(teach_loss, teach_opt, g_weights)
+
+        # Uncomment to turn on teaching.
         gen_op = tf.group(gen_op, teach_op)
 
         if self._learn_phase is None:
@@ -1029,7 +1017,7 @@ class QuestionGAN(QuestionGenerator):
         return self
 
     @check_built
-    def train(self, qsamples, asamples, qlens, alens, pretrain=False):
+    def train(self, qsamples, asamples, qlens, alens, print_examples=False):
         """Trains the model on the provided input data.
 
         Args:
@@ -1041,7 +1029,8 @@ class QuestionGAN(QuestionGenerator):
                 the length of the questions.
             alens: Numpy array with shape (batch_size), ints representing
                 the length of the answers.
-            pretrain: bool, whether or not to do the pretraining phase.
+            print_examles: bool, if set, print examples of the model's
+                word-by-word discriminator predictions.
 
         Returns:
             gen_loss, dis_loss: floats, the losses of the model.
@@ -1060,31 +1049,76 @@ class QuestionGAN(QuestionGenerator):
             feed_dict=feed_dict)
         self.summary_writer.add_summary(summary, current_time)
 
-        s_gen, g_preds, r_preds = self._sess.run([self.inferred_question, self.g_preds, self.r_preds], feed_dict=feed_dict)
-
-        print('real:')
-        for i, r_pred in zip(qsamples[0][:qlens[0]], r_preds[0]):
-            print('   %s: %.3f' % (yahoo._DICTIONARY[i - yahoo.NUM_SPECIAL] if i >= yahoo.NUM_SPECIAL else 'X', r_pred))
-
-        print('generated:')
-        for i, g_pred in zip(s_gen[0], g_preds[0]):
-            j = np.argmax(i)
-            print('   %s: %.3f' % (yahoo._DICTIONARY[j - yahoo.NUM_SPECIAL] if j >= yahoo.NUM_SPECIAL else 'X', g_pred))
+        if print_examples:
+            self.print_summary(qsamples, asamples, qlens, alens)
 
         return gen_acc, dis_acc
 
+    @check_built
+    def print_summary(self, qsamples, asamples, qlens, alens):
+        """Prints a summary of the model's current predictions.
+
+        Args:
+            qsamples: Numpy array with shape (batch_size, num_timesteps),
+                ints representing the encoded question.
+            asamples: Numpy array with shape (batch_size, num_timesteps),
+                ints representing the encoded answer.
+            qlens: Numpy array with shape (batch_size), ints representing
+                the length of the questions.
+            alens: Numpy array with shape (batch_size), ints representing
+                the length of the answers.
+        """
+
+        feed_dict = {
+            self.input_pl: asamples[:, :np.max(alens)],
+            self.input_len_pl: alens,
+            self.target_pl: qsamples[:, :np.max(qlens)],
+            self.target_len_pl: qlens,
+        }
+
+        s_gen, g_preds, r_preds, reward = self._sess.run([
+            self.inferred_question, self.g_preds,
+            self.r_preds, self.reward], feed_dict=feed_dict)
+        sys.stdout.write('real:\n')
+        for i, r_pred in zip(qsamples[0][:qlens[0]], r_preds[0]):
+            sys.stdout.write('   %s: %.3f\n'
+                             % (yahoo._DICTIONARY[i - yahoo.NUM_SPECIAL]
+                                if i >= yahoo.NUM_SPECIAL else 'X', r_pred))
+        sys.stdout.write('generated:\n')
+        for i, g_pred, r in zip(s_gen[0], g_preds[0], reward[0]):
+            j = np.argmax(i)
+            sys.stdout.write('   %s: %.3f (%.3f)\n'
+                             % (yahoo._DICTIONARY[j - yahoo.NUM_SPECIAL]
+                                if j >= yahoo.NUM_SPECIAL else 'X', g_pred, r))
+        sys.stdout.flush()
+
 
 if __name__ == '__main__':
-    LOGDIR = 'model/'  # Where the model is stored.
+    tf.app.flags.DEFINE_string('logdir', 'model/',
+                               'directory where model is saved')
+    tf.app.flags.DEFINE_bool('use_gan', False,
+                             'if set, use the GAN model instead')
+    FLAGS = tf.app.flags.FLAGS
+
+    LOGDIR = FLAGS.logdir
     sess = tf.Session()
 
-    model = QuestionGenerator(sess,
-                              yahoo.ANSWER_MAXLEN,
-                              yahoo.QUESTION_MAXLEN,
-                              yahoo.NUM_TOKENS,
-                              logdir=LOGDIR,
-                              only_cpu=True)
-    model.load(ignore_missing=True)
+    if FLAGS.use_gan:
+        model = QuestionGAN(sess,
+                            yahoo.ANSWER_MAXLEN,
+                            yahoo.QUESTION_MAXLEN,
+                            yahoo.NUM_TOKENS,
+                            logdir=LOGDIR,
+                            only_cpu=True)
+        model.load(ignore_missing=True)
+    else:
+        model = QuestionGenerator(sess,
+                                  yahoo.ANSWER_MAXLEN,
+                                  yahoo.QUESTION_MAXLEN,
+                                  yahoo.NUM_TOKENS,
+                                  logdir=LOGDIR,
+                                  only_cpu=True)
+        model.load(ignore_missing=False)
 
     query = raw_input('Enter some text [None to end]: ')
     while query:

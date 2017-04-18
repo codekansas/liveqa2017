@@ -19,7 +19,7 @@ import tensorflow as tf
 # Defines command line flags.
 tf.app.flags.DEFINE_integer('batch_size', 100,
                             'size of each training minibatch.')
-tf.app.flags.DEFINE_integer('batches_per_epoch', 1,
+tf.app.flags.DEFINE_integer('batches_per_epoch', 100,
                             'number of minibatches per training epoch')
 tf.app.flags.DEFINE_integer('nb_epoch', 30000,  # Goes through all data.
                             'number of epochs to train the model for')
@@ -58,7 +58,8 @@ def main(_):
                                   logdir=LOGDIR)
         model.load(ignore_missing=True)
 
-    # raw_input('Press <ENTER> to begin training')
+    # raw_input('Press <ENTER> to begin training (%s)'
+    #           % ('with gan' if FLAGS.use_gan else 'without gan'))
 
     # Gets the data iterator.
     data_iter = yahoo.iterate_answer_to_question(BATCH_SIZE, False)
@@ -70,13 +71,10 @@ def main(_):
         for batch_idx in xrange(1, BATCHES_PER_EPOCH + 1):
             qsamples, asamples, qlens, alens = data_iter.next()
             if FLAGS.use_gan:
-                # pretrain = epoch_idx < 10
-                pretrain = False
-                g, d = model.train(qsamples, asamples, qlens, alens, pretrain)
-                sys.stdout.write('epoch %d (%s): %d / %d gen acc = %.3f, '
+                g, d = model.train(qsamples, asamples, qlens, alens)
+                sys.stdout.write('epoch %d: %d / %d gen acc = %.3f, '
                                  'dis acc = %.3f       \r'
                                  % (epoch_idx,
-                                    'pretraining' if pretrain else 'main',
                                     batch_idx,
                                     BATCHES_PER_EPOCH,
                                     g, d))
@@ -95,7 +93,7 @@ def main(_):
         model.save()
 
         for i in range(5):
-            qsamples, asamples, _, alens, refs = sample_iter.next()
+            qsamples, asamples, qlens, alens, refs = sample_iter.next()
             qpred = model.sample(asamples, alens)
 
             s = []
@@ -110,7 +108,10 @@ def main(_):
             s.append('pred: "%s"' % yahoo.detokenize(qpred[0], refs[0],
                                                      argmax=True,
                                                      show_missing=True))
-            sys.stdout.write(' | '.join(s) + '\n')
+            sys.stdout.write('\n   '.join(s) + '\n')
+
+            if FLAGS.use_gan:
+                model.print_summary(qsamples, asamples, qlens, alens)
 
 
 if __name__ == '__main__':

@@ -134,7 +134,7 @@ def build_model(embeddings, question_len, answer_len, mode='recurrent'):
         a trainable keras model.
     """
 
-    RNN_DIMS = 64
+    RNN_DIMS = 256
     CONV_DIMS = 64
     MARGIN = 0.2
 
@@ -149,8 +149,7 @@ def build_model(embeddings, question_len, answer_len, mode='recurrent'):
 
     # Applies the embedding layer.
     vocab_size, num_embedding_dims = embeddings.shape
-    emb = Embedding(vocab_size, num_embedding_dims, weights=[embeddings],
-                    trainable=False)
+    emb = Embedding(vocab_size, num_embedding_dims, weights=[embeddings])
     q_var = emb(q_var)
     a_var = emb(a_var)
 
@@ -290,6 +289,7 @@ if __name__ == '__main__':  # Tests the model on some dummy data.
 
     if os.path.exists(SAVE_LOC):
         model.load_weights(SAVE_LOC)
+        print('loading weights from %s' % SAVE_LOC)
 
     # Gets the data iterator.
     data_iter = yahoo.iterate_answer_to_question(BATCH_SIZE, False)

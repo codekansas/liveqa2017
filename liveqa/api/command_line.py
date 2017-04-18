@@ -13,7 +13,6 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 
 import argparse
-from liveqa.api import get_question, get_answer
 
 parser = argparse.ArgumentParser(
     description='Command-line utility for the LiveQA API.',
@@ -22,8 +21,17 @@ parser.add_argument('-m', '--mode',
                     default='answer',
                     choices=['question', 'answer'],
                     help='The mode to use.')
+parser.add_argument('-l', '--use_lda',
+                    default=False,
+                    action='store_true',
+                    help='If set, use LDA instead of neural network.')
 args = parser.parse_args()
 
+
+if args.use_lda:
+    from liveqa.api.lda_api import get_question, get_answer
+else:
+    from liveqa.api import get_question, get_answer
 
 if args.mode.lower() == 'question':
     api = get_question

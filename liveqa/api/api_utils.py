@@ -17,7 +17,7 @@ import threading
 # Defines constants.
 MAX_JOBS = 10  # Maximum number of jobs that can be on the queue at once.
 SHALLOW_LIMIT = 100  # Max number of candidates to pass to shallow ranker.
-MAX_WAIT_TIME = 5  # Maximum number of seconds to wait for a query.
+MAX_WAIT_TIME = 100  # Maximum number of seconds to wait for a query.
 NUM_THREADS = 1  # Number of background threads to run at once.
 
 
