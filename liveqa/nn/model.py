@@ -188,6 +188,7 @@ class QuestionGenerator(object):
                 raise ValueError('Invalid init: "%s"' % init)
         else:
             weight_val = weight_val.astype('float32')
+            initializer = lambda shape, dtype, partition_info: weight_val
 
         device = device.lower()
         if device == 'gpu':
