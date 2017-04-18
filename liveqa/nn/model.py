@@ -168,17 +168,22 @@ class QuestionGenerator(object):
         if weight_val is None:
             init = init.lower()
             if init == 'normal':
-                weight_val = tf.random_normal(shape, stddev=0.05)
+                initializer = (lambda shape, dtype, partition_info:
+                               tf.random_normal(shape, stddev=0.05))
             elif init == 'uniform':
-                weight_val = tf.random_uniform(shape, maxval=0.05)
+                initializer = (lambda shape, dtype, partition_info:
+                               tf.random_uniform(shape, stddev=0.05))
             elif init == 'glorot':
-                stddev = np.sqrt(6. / sum(shape))
-                weight_val = tf.random_normal(shape, stddev=stddev)
+                initializer = (lambda shape, dtype, partition_info:
+                               tf.random_normal(
+                                   shape, stddev=np.sqrt(6. / sum(shape))))
             elif init == 'eye':
                 assert all(i == shape[0] for i in shape)
-                weight_val = tf.eye(shape[0])
+                initializer = (lambda shape, dtype, partition_info:
+                               tf.eye(shape[0]))
             elif init == 'zero':
-                weight_val = tf.zeros(shape)
+                initializer = (lambda shape, dtype, partition_info:
+                               tf.zeros(shape))
             else:
                 raise ValueError('Invalid init: "%s"' % init)
         else:
@@ -196,10 +201,11 @@ class QuestionGenerator(object):
             on_gpu = False
 
         with tf.device('/gpu:0' if on_gpu else '/cpu:0'):
-            weight = tf.Variable(weight_val, name=name, trainable=trainable)
+            weight = tf.get_variable(name=name,
+                                     shape=shape,
+                                     initializer=initializer,
+                                     trainable=trainable)
         self._weights.append(weight)
-
-        return weight
 
     def get_scope_variables(self):
         """Returns all the variables in scope.
